@@ -34,7 +34,7 @@ private:
 };
 
 class Server {
-private:
+protected:
     Storage storage;
     ThreadPool thread_pool;
     int server_fd;
@@ -44,18 +44,20 @@ private:
     
 public:
     explicit Server(uint16_t port, size_t num_threads = 8);
-    ~Server();
+    virtual ~Server();
     
-    void start();
-    void stop();
+    virtual void start();
+    virtual void stop();
     bool is_running() const { return running.load(); }
     
-private:
+protected:
     void accept_loop();
     void handle_client(int client_fd);
-    void process_request(int client_fd, const Request& request);
+    virtual void process_request(int client_fd, const Request& request);
     bool receive_data(int fd, std::vector<uint8_t>& buffer, size_t expected_size);
     bool send_data(int fd, const std::vector<uint8_t>& data);
+    
+private:
     void setup_server_socket();
 };
 

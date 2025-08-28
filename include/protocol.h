@@ -16,7 +16,13 @@ enum class OpCode : uint8_t {
     STABILIZE = 0x11,
     NOTIFY = 0x12,
     PING = 0x13,
-    REPLICATE = 0x14
+    REPLICATE = 0x14,
+    FIND_SUCCESSOR = 0x20,
+    FIND_PREDECESSOR = 0x21,
+    GET_PREDECESSOR = 0x22,
+    GET_SUCCESSOR = 0x23,
+    CLOSEST_PRECEDING_NODE = 0x24,
+    NODE_INFO = 0x25
 };
 
 enum class StatusCode : uint8_t {

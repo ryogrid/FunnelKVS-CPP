@@ -38,16 +38,31 @@ $(BIN_DIR)/test_protocol: $(TEST_DIR)/test_protocol.cpp $(BUILD_DIR)/protocol.o
 $(BIN_DIR)/test_storage: $(TEST_DIR)/test_storage.cpp $(BUILD_DIR)/storage.o
 	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/storage.o -o $@ $(LDFLAGS)
 
+$(BIN_DIR)/test_hash: $(TEST_DIR)/test_hash.cpp $(BUILD_DIR)/hash.o
+	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/hash.o -o $@ $(LDFLAGS)
+
+$(BIN_DIR)/test_chord: $(TEST_DIR)/test_chord.cpp $(BUILD_DIR)/chord.o $(BUILD_DIR)/hash.o $(BUILD_DIR)/storage.o
+	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/chord.o $(BUILD_DIR)/hash.o $(BUILD_DIR)/storage.o -o $@ $(LDFLAGS)
+
 $(BIN_DIR)/test_integration: $(TEST_DIR)/test_integration.cpp $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
 
-test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_integration
+$(BIN_DIR)/test_chord_integration: $(TEST_DIR)/test_chord_integration.cpp $(OBJECTS)
+	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
+
+test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash $(BIN_DIR)/test_chord $(BIN_DIR)/test_integration $(BIN_DIR)/test_chord_integration
 	@echo "Running unit tests..."
 	@$(BIN_DIR)/test_protocol
 	@echo ""
 	@$(BIN_DIR)/test_storage
 	@echo ""
+	@$(BIN_DIR)/test_hash
+	@echo ""
+	@$(BIN_DIR)/test_chord
+	@echo ""
 	@$(BIN_DIR)/test_integration
+	@echo ""
+	@$(BIN_DIR)/test_chord_integration
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)

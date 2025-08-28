@@ -165,7 +165,7 @@ public:
 2. Node routes to owner = successor(hash(key))
 3. Owner stores locally
 4. Owner replicates to next R-1 successors
-5. Returns success after local write (async replication)
+5. Returns success after local write (sync replication)
 
 ### 6.3 Read Operation
 1. Client sends GET to any node
@@ -308,7 +308,6 @@ struct ClientConfig {
 ### 12.1 Optimizations
 - Batch stabilization updates
 - Cache finger table lookups
-- Parallel replication
 - Zero-copy networking where possible
 
 ### 12.2 Scalability Targets
@@ -354,6 +353,4 @@ struct ClientConfig {
 - Re-replication
 
 ### Phase 4: Production Features
-- Monitoring
-- Performance optimization
 - Stress testing
