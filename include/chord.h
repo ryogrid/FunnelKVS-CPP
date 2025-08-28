@@ -3,6 +3,7 @@
 
 #include "hash.h"
 #include "storage.h"
+#include "replication.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -47,14 +48,20 @@ private:
     mutable std::mutex routing_mutex;
     std::unique_ptr<Storage> local_storage;
     
+    // Replication and failure detection
+    std::unique_ptr<ReplicationManager> replication_manager;
+    std::unique_ptr<FailureDetector> failure_detector;
+    
     // Maintenance threads
     std::atomic<bool> running;
     std::thread stabilize_thread;
     std::thread fix_fingers_thread;
+    std::thread failure_detection_thread;
     
     int next_finger_to_fix;
     std::chrono::milliseconds stabilize_interval;
     std::chrono::milliseconds fix_fingers_interval;
+    std::chrono::milliseconds failure_check_interval;
     
 public:
     explicit ChordNode(const std::string& address, uint16_t port);
@@ -85,10 +92,15 @@ public:
     void notify(std::shared_ptr<NodeInfo> node);
     void fix_fingers();
     
-    // Data operations
+    // Data operations with replication
     bool store_key(const std::string& key, const std::vector<uint8_t>& value);
     bool retrieve_key(const std::string& key, std::vector<uint8_t>& value);
     bool remove_key(const std::string& key);
+    
+    // Replication operations
+    std::vector<std::shared_ptr<NodeInfo>> get_replica_nodes(const Hash160& key_id) const;
+    void handle_node_failure(std::shared_ptr<NodeInfo> failed_node);
+    void trigger_re_replication();
     
     // Remote procedure calls (to be called by network layer)
     std::shared_ptr<NodeInfo> rpc_find_successor(const Hash160& id);
@@ -111,13 +123,17 @@ private:
     void update_finger_table_entry(int index, std::shared_ptr<NodeInfo> node);
     void stabilize_loop();
     void fix_fingers_loop();
+    void failure_detection_loop();
     Hash160 get_finger_start(int index) const;
     
-    // Network communication helpers (to be implemented later)
+    // Network communication helpers
     std::shared_ptr<NodeInfo> contact_node(std::shared_ptr<NodeInfo> node, 
                                           const std::string& operation,
                                           const Hash160& param = Hash160{});
     bool ping_node(std::shared_ptr<NodeInfo> node);
+    
+    // Helper methods
+    std::vector<std::shared_ptr<NodeInfo>> get_successor_nodes(int count) const;
 };
 
 } // namespace funnelkvs

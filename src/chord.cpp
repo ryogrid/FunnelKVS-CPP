@@ -1,4 +1,5 @@
 #include "chord.h"
+#include "client.h"
 #include <iostream>
 #include <sstream>
 #include <algorithm>
@@ -23,10 +24,13 @@ ChordNode::ChordNode(const std::string& address, uint16_t port)
     , successor_list(SUCCESSOR_LIST_SIZE)
     , finger_table(FINGER_TABLE_SIZE)
     , local_storage(std::unique_ptr<Storage>(new Storage()))
+    , replication_manager(std::unique_ptr<ReplicationManager>(new ReplicationManager()))
+    , failure_detector(std::unique_ptr<FailureDetector>(new FailureDetector()))
     , running(false)
     , next_finger_to_fix(0)
     , stabilize_interval(1000) // 1 second
     , fix_fingers_interval(500) // 0.5 seconds
+    , failure_check_interval(2000) // 2 seconds
 {
     // Initialize successor list and finger table to point to self (single node ring)
     auto self_ptr = std::make_shared<NodeInfo>(self_info);
@@ -99,6 +103,7 @@ void ChordNode::start_maintenance() {
     running.store(true);
     stabilize_thread = std::thread(&ChordNode::stabilize_loop, this);
     fix_fingers_thread = std::thread(&ChordNode::fix_fingers_loop, this);
+    failure_detection_thread = std::thread(&ChordNode::failure_detection_loop, this);
     
     std::cout << "Started maintenance threads for node " << self_info.to_string() << std::endl;
 }
@@ -115,6 +120,9 @@ void ChordNode::stop_maintenance() {
     }
     if (fix_fingers_thread.joinable()) {
         fix_fingers_thread.join();
+    }
+    if (failure_detection_thread.joinable()) {
+        failure_detection_thread.join();
     }
     
     std::cout << "Stopped maintenance threads for node " << self_info.to_string() << std::endl;
@@ -238,14 +246,36 @@ bool ChordNode::store_key(const std::string& key, const std::vector<uint8_t>& va
     Hash160 key_id = SHA1::hash(key);
     
     if (is_responsible_for_key(key_id)) {
+        // Store locally first
         local_storage->put(key, value);
+        
+        // Get replica nodes for replication
+        auto replicas = get_replica_nodes(key_id);
+        
+        // Synchronous replication as specified in DESIGN.md
+        if (!replicas.empty()) {
+            bool replication_success = replication_manager->replicate_put(key, value, replicas);
+            if (!replication_success) {
+                std::cerr << "Warning: Replication failed for key '" << key << "'" << std::endl;
+                // Continue with local storage success
+            }
+        }
+        
         return true;
     } else {
         // Forward to responsible node
         auto responsible = find_successor(key_id);
         if (responsible && *responsible != self_info) {
-            // In full implementation, this would be a remote call
-            return false; // Not implemented yet
+            // Send to responsible node via client
+            try {
+                Client client(responsible->address, responsible->port);
+                if (client.connect()) {
+                    return client.put(key, value);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to forward PUT to " << responsible->to_string() 
+                          << ": " << e.what() << std::endl;
+            }
         }
         return false;
     }
@@ -255,13 +285,31 @@ bool ChordNode::retrieve_key(const std::string& key, std::vector<uint8_t>& value
     Hash160 key_id = SHA1::hash(key);
     
     if (is_responsible_for_key(key_id)) {
-        return local_storage->get(key, value);
+        // Try local storage first
+        if (local_storage->get(key, value)) {
+            return true;
+        }
+        
+        // If not found locally, try replicas (fallback)
+        auto replicas = get_replica_nodes(key_id);
+        if (!replicas.empty()) {
+            return replication_manager->get_from_replicas(key, value, replicas);
+        }
+        
+        return false;
     } else {
         // Forward to responsible node
         auto responsible = find_successor(key_id);
         if (responsible && *responsible != self_info) {
-            // In full implementation, this would be a remote call
-            return false; // Not implemented yet
+            try {
+                Client client(responsible->address, responsible->port);
+                if (client.connect()) {
+                    return client.get(key, value);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to forward GET to " << responsible->to_string() 
+                          << ": " << e.what() << std::endl;
+            }
         }
         return false;
     }
@@ -271,13 +319,32 @@ bool ChordNode::remove_key(const std::string& key) {
     Hash160 key_id = SHA1::hash(key);
     
     if (is_responsible_for_key(key_id)) {
-        return local_storage->remove(key);
+        // Remove from local storage first
+        bool local_removed = local_storage->remove(key);
+        
+        // Remove from replicas
+        auto replicas = get_replica_nodes(key_id);
+        if (!replicas.empty()) {
+            bool replication_success = replication_manager->replicate_delete(key, replicas);
+            if (!replication_success) {
+                std::cerr << "Warning: Replication delete failed for key '" << key << "'" << std::endl;
+            }
+        }
+        
+        return local_removed;
     } else {
         // Forward to responsible node
         auto responsible = find_successor(key_id);
         if (responsible && *responsible != self_info) {
-            // In full implementation, this would be a remote call
-            return false; // Not implemented yet
+            try {
+                Client client(responsible->address, responsible->port);
+                if (client.connect()) {
+                    return client.remove(key);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to forward DELETE to " << responsible->to_string() 
+                          << ": " << e.what() << std::endl;
+            }
         }
         return false;
     }
@@ -345,22 +412,159 @@ void ChordNode::fix_fingers_loop() {
     }
 }
 
+void ChordNode::failure_detection_loop() {
+    while (running.load()) {
+        try {
+            // Check successor and predecessor health
+            {
+                std::lock_guard<std::mutex> lock(routing_mutex);
+                
+                // Check successor list
+                for (auto& successor : successor_list) {
+                    if (successor && *successor != self_info) {
+                        failure_detector->ping_node(successor);
+                        if (failure_detector->is_node_failed(successor)) {
+                            handle_node_failure(successor);
+                        }
+                    }
+                }
+                
+                // Check predecessor
+                if (predecessor && *predecessor != self_info) {
+                    failure_detector->ping_node(predecessor);
+                    if (failure_detector->is_node_failed(predecessor)) {
+                        handle_node_failure(predecessor);
+                    }
+                }
+            }
+            
+            // Cleanup old failure detection entries
+            failure_detector->cleanup_old_entries();
+            
+        } catch (const std::exception& e) {
+            std::cerr << "Error in failure_detection: " << e.what() << std::endl;
+        }
+        std::this_thread::sleep_for(failure_check_interval);
+    }
+}
+
 std::shared_ptr<NodeInfo> ChordNode::contact_node(std::shared_ptr<NodeInfo> node, 
                                                   const std::string& operation,
                                                   const Hash160& param) {
-    // Placeholder for network communication
-    // In full implementation, this would create a client connection and send RPC
     if (!node || *node == self_info) {
         return std::make_shared<NodeInfo>(self_info);
     }
     
-    // For now, return the node itself (simulating successful contact)
-    return node;
+    try {
+        Client client(node->address, node->port);
+        if (!client.connect()) {
+            failure_detector->mark_node_failed(node);
+            return nullptr;
+        }
+        
+        failure_detector->mark_node_responsive(node);
+        
+        if (operation == "get_predecessor") {
+            // Request predecessor information via custom protocol
+            // For now, return placeholder since full RPC not implemented
+            return node;
+        } else if (operation == "find_successor") {
+            // Request successor for given ID
+            // For now, return placeholder
+            return node;
+        } else if (operation == "notify") {
+            // Notify node about this node as predecessor
+            // For now, just ping
+            client.ping();
+            return node;
+        }
+        
+        return node;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to contact node " << node->to_string() 
+                  << ": " << e.what() << std::endl;
+        failure_detector->mark_node_failed(node);
+        return nullptr;
+    }
 }
 
 bool ChordNode::ping_node(std::shared_ptr<NodeInfo> node) {
-    // Placeholder for network ping
-    return node != nullptr;
+    return replication_manager->ping_node(node);
+}
+
+std::vector<std::shared_ptr<NodeInfo>> ChordNode::get_replica_nodes(const Hash160& key_id) const {
+    std::lock_guard<std::mutex> lock(routing_mutex);
+    
+    std::vector<std::shared_ptr<NodeInfo>> replicas;
+    int replication_factor = replication_manager->get_replication_factor();
+    
+    // Get successors for replication (excluding self)
+    for (int i = 0; i < replication_factor - 1 && i < SUCCESSOR_LIST_SIZE; ++i) {
+        if (successor_list[i] && *successor_list[i] != self_info) {
+            replicas.push_back(successor_list[i]);
+        }
+    }
+    
+    return replicas;
+}
+
+void ChordNode::handle_node_failure(std::shared_ptr<NodeInfo> failed_node) {
+    std::lock_guard<std::mutex> lock(routing_mutex);
+    
+    std::cout << "Handling failure of node: " << failed_node->to_string() << std::endl;
+    
+    // Update successor list if failed node is a successor
+    for (size_t i = 0; i < successor_list.size(); ++i) {
+        if (successor_list[i] && *successor_list[i] == *failed_node) {
+            // Remove failed node and shift list
+            for (size_t j = i; j < successor_list.size() - 1; ++j) {
+                successor_list[j] = successor_list[j + 1];
+            }
+            
+            // Find new successor to fill the list
+            successor_list[successor_list.size() - 1] = find_successor(self_info.id);
+            break;
+        }
+    }
+    
+    // Update predecessor if it's the failed node
+    if (predecessor && *predecessor == *failed_node) {
+        predecessor = nullptr;
+        std::cout << "Predecessor failed, will be updated via stabilization" << std::endl;
+    }
+    
+    // Update finger table entries pointing to failed node
+    for (size_t i = 0; i < finger_table.size(); ++i) {
+        if (finger_table[i] && *finger_table[i] == *failed_node) {
+            finger_table[i] = successor_list[0]; // Point to first successor
+        }
+    }
+    
+    // Trigger re-replication for keys that were replicated to the failed node
+    trigger_re_replication();
+}
+
+void ChordNode::trigger_re_replication() {
+    // Get all keys from local storage for re-replication
+    // This is a simplified implementation
+    std::cout << "Triggering re-replication after node failure" << std::endl;
+    
+    // In a full implementation, we would:
+    // 1. Identify keys that need re-replication
+    // 2. Find new replica nodes
+    // 3. Copy data to new replicas
+}
+
+std::vector<std::shared_ptr<NodeInfo>> ChordNode::get_successor_nodes(int count) const {
+    std::lock_guard<std::mutex> lock(routing_mutex);
+    
+    std::vector<std::shared_ptr<NodeInfo>> successors;
+    for (int i = 0; i < count && i < SUCCESSOR_LIST_SIZE; ++i) {
+        if (successor_list[i]) {
+            successors.push_back(successor_list[i]);
+        }
+    }
+    return successors;
 }
 
 void ChordNode::print_finger_table() const {

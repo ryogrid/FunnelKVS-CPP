@@ -41,8 +41,8 @@ $(BIN_DIR)/test_storage: $(TEST_DIR)/test_storage.cpp $(BUILD_DIR)/storage.o
 $(BIN_DIR)/test_hash: $(TEST_DIR)/test_hash.cpp $(BUILD_DIR)/hash.o
 	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/hash.o -o $@ $(LDFLAGS)
 
-$(BIN_DIR)/test_chord: $(TEST_DIR)/test_chord.cpp $(BUILD_DIR)/chord.o $(BUILD_DIR)/hash.o $(BUILD_DIR)/storage.o
-	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/chord.o $(BUILD_DIR)/hash.o $(BUILD_DIR)/storage.o -o $@ $(LDFLAGS)
+$(BIN_DIR)/test_chord: $(TEST_DIR)/test_chord.cpp $(BUILD_DIR)/chord.o $(BUILD_DIR)/hash.o $(BUILD_DIR)/storage.o $(BUILD_DIR)/replication.o $(BUILD_DIR)/client.o $(BUILD_DIR)/protocol.o
+	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/chord.o $(BUILD_DIR)/hash.o $(BUILD_DIR)/storage.o $(BUILD_DIR)/replication.o $(BUILD_DIR)/client.o $(BUILD_DIR)/protocol.o -o $@ $(LDFLAGS)
 
 $(BIN_DIR)/test_integration: $(TEST_DIR)/test_integration.cpp $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
@@ -50,7 +50,13 @@ $(BIN_DIR)/test_integration: $(TEST_DIR)/test_integration.cpp $(OBJECTS)
 $(BIN_DIR)/test_chord_integration: $(TEST_DIR)/test_chord_integration.cpp $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
 
-test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash $(BIN_DIR)/test_chord $(BIN_DIR)/test_integration $(BIN_DIR)/test_chord_integration
+$(BIN_DIR)/test_replication: $(TEST_DIR)/test_replication.cpp $(OBJECTS)
+	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
+
+$(BIN_DIR)/test_phase3_integration: $(TEST_DIR)/test_phase3_integration.cpp $(OBJECTS)
+	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
+
+test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash $(BIN_DIR)/test_chord $(BIN_DIR)/test_integration $(BIN_DIR)/test_chord_integration $(BIN_DIR)/test_replication $(BIN_DIR)/test_phase3_integration
 	@echo "Running unit tests..."
 	@$(BIN_DIR)/test_protocol
 	@echo ""
@@ -63,6 +69,10 @@ test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash
 	@$(BIN_DIR)/test_integration
 	@echo ""
 	@$(BIN_DIR)/test_chord_integration
+	@echo ""
+	@$(BIN_DIR)/test_replication
+	@echo ""
+	@$(BIN_DIR)/test_phase3_integration
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
