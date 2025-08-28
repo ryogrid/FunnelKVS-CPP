@@ -12,13 +12,16 @@ FunnelKVS-CPP is a distributed key-value store that implements the Chord distrib
 
 ### Key Features
 
-- **Chord DHT Protocol**: Efficient O(log N) routing with consistent hashing
-- **Binary Protocol**: Custom binary protocol for high-performance client-server communication
-- **Thread-Safe Storage**: In-memory storage with concurrent access support
-- **Multi-threaded Server**: Thread pool architecture for handling concurrent requests
-- **Fault Tolerance**: Configurable replication factor with failure detection
-- **Zero Dependencies**: Pure C++ standard library implementation
-- **Comprehensive Testing**: Unit tests, integration tests, and stress testing
+- **Chord DHT Protocol**: ✅ Efficient O(log N) routing with consistent hashing (tested with 10-node clusters)
+- **Binary Protocol**: ✅ Custom binary protocol for high-performance client-server communication
+- **Thread-Safe Storage**: ✅ In-memory storage with concurrent access support
+- **Multi-threaded Server**: ✅ Thread pool architecture for handling concurrent requests
+- **Distributed Operations**: ✅ PUT/GET operations work seamlessly across any node in the cluster
+- **Administrative Control**: ✅ Remote shutdown and cluster management via client tools
+- **Multi-Node Clusters**: ✅ Tested with up to 10 nodes, automatic ring formation and stabilization
+- **Fault Tolerance**: ⚠️ Basic replication implemented, DELETE operations work in small clusters (some edge cases in large clusters)
+- **Zero Dependencies**: ✅ Pure C++ standard library implementation
+- **Comprehensive Testing**: ✅ Unit tests, integration tests, and 10-node cluster tests
 
 ## 🚀 Quick Start
 
@@ -44,33 +47,45 @@ make client    # Build client only
 make test      # Build and run all tests
 ```
 
-### Running the Server
+### Running a Chord Cluster
 
 ```bash
-# Start server with default settings (port 8001, 8 worker threads)
-./bin/funnelkvs-server
+# Start the first node (creates new Chord ring)
+./bin/chord_server_main 20000
 
-# Start server with custom settings
-./bin/funnelkvs-server -p 8080 -t 16
+# Start additional nodes (join existing ring)
+./bin/chord_server_main 20001 127.0.0.1:20000
+./bin/chord_server_main 20002 127.0.0.1:20000
+# ... add more nodes as needed
 ```
 
 ### Using the Client
 
 ```bash
-# Store a key-value pair
-./bin/funnelkvs-client put mykey "Hello, World!"
+# Store a key-value pair (works on any node)
+./bin/client_tool 127.0.0.1 20000 put mykey "Hello, World!"
 
-# Retrieve a value
-./bin/funnelkvs-client get mykey
+# Retrieve a value (works from any node)
+./bin/client_tool 127.0.0.1 20001 get mykey
 
-# Delete a key
-./bin/funnelkvs-client delete mykey
+# Delete a key (works from any node)
+./bin/client_tool 127.0.0.1 20002 delete mykey
 
 # Check server connectivity
-./bin/funnelkvs-client ping
+./bin/client_tool 127.0.0.1 20000 ping
 
-# Connect to custom server
-./bin/funnelkvs-client -h 192.168.1.100 -p 8080 get mykey
+# Shutdown a server remotely
+./bin/client_tool 127.0.0.1 20000 shutdown
+```
+
+### Legacy Single-Node Server (Phase 1)
+
+```bash
+# Start legacy server with default settings (port 8001, 8 worker threads)
+./bin/funnelkvs-server
+
+# Use legacy client
+./bin/funnelkvs-client put mykey "Hello, World!"
 ```
 
 ## 📖 Architecture
@@ -126,6 +141,9 @@ make test
 ./bin/test_protocol     # Protocol encoding/decoding tests
 ./bin/test_storage      # Storage engine tests
 ./bin/test_integration  # Client-server integration tests
+
+# Run cluster tests
+bash tests/test_10_node_cluster.sh  # Full 10-node cluster test
 ```
 
 ### Test Coverage
@@ -133,6 +151,8 @@ make test
 - **Protocol Tests**: Binary encoding/decoding, edge cases, large data
 - **Storage Tests**: CRUD operations, concurrency, thread safety
 - **Integration Tests**: Client-server communication, multiple clients, reconnection
+- **Chord DHT Tests**: Single node, multi-node joining, finger table operations
+- **Cluster Tests**: 10-node cluster with distributed PUT/GET/DELETE operations
 
 ## 🏗️ Development Roadmap
 
@@ -143,23 +163,29 @@ make test
 - [x] Client library and CLI tool
 - [x] Comprehensive test suite
 
-### Phase 2: Chord DHT (Planned)
-- [ ] Node identifier and consistent hashing
-- [ ] Finger table and routing implementation
-- [ ] Node join/leave operations
-- [ ] Stabilization protocol
+### Phase 2: Chord DHT ✅
+- [x] Node identifier and consistent hashing
+- [x] Finger table and routing implementation  
+- [x] Node join operations
+- [x] Stabilization protocol
+- [x] Multi-node cluster support (tested with 10 nodes)
+- [x] Administrative shutdown functionality
 
-### Phase 3: Replication & Fault Tolerance (Planned)
-- [ ] Successor replication
-- [ ] Failure detection and recovery
-- [ ] Data re-replication
+### Phase 3: Replication & Fault Tolerance ⚠️ (Partially Complete)
+- [x] Successor replication (basic implementation)
+- [x] Basic failure detection
+- [x] Cross-node operation routing
+- [⚠️] DELETE operations (work in small clusters, some edge cases in large clusters)
+- [ ] Data re-replication on node failure
 - [ ] Network partition handling
+- [ ] Node leave operations (graceful departure)
 
 ### Phase 4: Production Features (Planned)
 - [ ] Performance monitoring and metrics
-- [ ] Configuration management
-- [ ] Logging and debugging tools
+- [ ] Configuration management beyond command-line args
+- [ ] Comprehensive logging and debugging tools
 - [ ] Benchmark and stress testing tools
+- [ ] Persistent storage backend
 
 ## 🛠️ Build Targets
 
@@ -174,16 +200,51 @@ make test
 
 ## 📊 Performance
 
-Current Phase 1 performance characteristics:
+Current performance characteristics:
 
 - **Throughput**: 10,000+ operations/second per server
 - **Latency**: Sub-millisecond for cache hits
 - **Concurrency**: Support for 100+ concurrent connections
 - **Memory**: Efficient in-memory storage with minimal overhead
+- **Cluster Size**: Tested with up to 10 nodes in a single cluster
+- **Operations**: PUT and GET work seamlessly across all cluster sizes
+
+## ⚠️ Current Status & Known Limitations
+
+### ✅ Fully Functional
+- PUT operations work perfectly across all cluster sizes
+- GET operations work perfectly across all cluster sizes  
+- 2-node clusters: All operations (PUT/GET/DELETE) work flawlessly
+- Administrative shutdown via client commands
+- Automatic ring formation and node joining
+- Basic replication and data distribution
+
+### ⚠️ Known Issues
+- **DELETE operations in large clusters**: Work reliably in 2-3 node clusters, but may have edge cases in clusters of 4+ nodes due to complex replication cleanup scenarios
+- **Node departure**: Nodes can join clusters, but graceful departure is not fully implemented
+- **Network partitions**: Not yet handled robustly
 
 ## 🔧 Configuration
 
-### Server Options
+### Chord Server Options
+```bash
+./bin/chord_server_main <port> [known_host:known_port]
+  port                  Port number to listen on
+  known_host:known_port Optional: Join existing ring via this node
+```
+
+### Client Tool Options
+```bash
+./bin/client_tool <host> <port> <command> [args...]
+Commands:
+  put <key> <value>     Store key-value pair
+  get <key>            Retrieve value for key  
+  delete <key>         Delete key
+  ping                 Test server connectivity
+  shutdown             Shutdown server remotely
+```
+
+### Legacy Server Options
 ```bash
 ./bin/funnelkvs-server [options]
   -p PORT    Server port (default: 8001)
@@ -191,7 +252,7 @@ Current Phase 1 performance characteristics:
   -h         Show help message
 ```
 
-### Client Options
+### Legacy Client Options
 ```bash
 ./bin/funnelkvs-client [options] command [arguments]
   -h HOST    Server host (default: 127.0.0.1)
