@@ -339,17 +339,24 @@ bool ChordNode::remove_key(const std::string& key) {
     Hash160 key_id = SHA1::hash(key);
     
     if (is_responsible_for_key(key_id)) {
-        // Check if key exists before attempting deletion
+        // Check if key exists locally, or in replicas if not local
         std::vector<uint8_t> dummy;
-        if (!local_storage->get(key, dummy)) {
-            return false; // Key doesn't exist
+        bool key_exists = local_storage->get(key, dummy);
+        
+        if (!key_exists) {
+            // Check if key exists in replicas (like retrieve_key does)
+            auto replicas = get_replica_nodes(key_id);
+            if (!replicas.empty()) {
+                key_exists = replication_manager->get_from_replicas(key, dummy, replicas);
+            }
+            
+            if (!key_exists) {
+                return false; // Key doesn't exist anywhere
+            }
         }
         
-        // Remove from local storage
-        bool local_removed = local_storage->remove(key);
-        if (!local_removed) {
-            return false;
-        }
+        // Remove from local storage (this will only succeed if key exists locally)
+        local_storage->remove(key);
         
         // Synchronously remove from replicas
         auto replicas = get_replica_nodes(key_id);
