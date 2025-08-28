@@ -193,6 +193,26 @@ bool Client::put(const std::string& key, const std::vector<uint8_t>& value) {
         return false;
     }
     
+    // Handle redirect
+    if (response.status == StatusCode::REDIRECT && !response.value.empty()) {
+        std::string redirect_node(response.value.begin(), response.value.end());
+        size_t colon_pos = redirect_node.find(':');
+        if (colon_pos != std::string::npos) {
+            std::string redirect_host = redirect_node.substr(0, colon_pos);
+            int redirect_port = std::stoi(redirect_node.substr(colon_pos + 1));
+            
+            // Create temporary client for redirect
+            Client redirect_client(redirect_host, redirect_port);
+            if (redirect_client.connect()) {
+                Response redirect_response;
+                if (redirect_client.send_request(request, redirect_response)) {
+                    return redirect_response.status == StatusCode::SUCCESS;
+                }
+            }
+        }
+        return false;
+    }
+    
     return response.status == StatusCode::SUCCESS;
 }
 
@@ -202,6 +222,30 @@ bool Client::get(const std::string& key, std::vector<uint8_t>& value) {
     Response response;
     
     if (!send_request(request, response)) {
+        return false;
+    }
+    
+    // Handle redirect
+    if (response.status == StatusCode::REDIRECT && !response.value.empty()) {
+        std::string redirect_node(response.value.begin(), response.value.end());
+        size_t colon_pos = redirect_node.find(':');
+        if (colon_pos != std::string::npos) {
+            std::string redirect_host = redirect_node.substr(0, colon_pos);
+            int redirect_port = std::stoi(redirect_node.substr(colon_pos + 1));
+            
+            // Create temporary client for redirect
+            Client redirect_client(redirect_host, redirect_port);
+            if (redirect_client.connect()) {
+                Response redirect_response;
+                if (redirect_client.send_request(request, redirect_response)) {
+                    if (redirect_response.status == StatusCode::SUCCESS) {
+                        value = redirect_response.value;
+                        return true;
+                    }
+                    return false;
+                }
+            }
+        }
         return false;
     }
     
@@ -222,11 +266,42 @@ bool Client::remove(const std::string& key) {
         return false;
     }
     
+    // Handle redirect
+    if (response.status == StatusCode::REDIRECT && !response.value.empty()) {
+        std::string redirect_node(response.value.begin(), response.value.end());
+        size_t colon_pos = redirect_node.find(':');
+        if (colon_pos != std::string::npos) {
+            std::string redirect_host = redirect_node.substr(0, colon_pos);
+            int redirect_port = std::stoi(redirect_node.substr(colon_pos + 1));
+            
+            // Create temporary client for redirect
+            Client redirect_client(redirect_host, redirect_port);
+            if (redirect_client.connect()) {
+                Response redirect_response;
+                if (redirect_client.send_request(request, redirect_response)) {
+                    return redirect_response.status == StatusCode::SUCCESS;
+                }
+            }
+        }
+        return false;
+    }
+    
     return response.status == StatusCode::SUCCESS;
 }
 
 bool Client::ping() {
     Request request(OpCode::PING, {});
+    Response response;
+    
+    if (!send_request(request, response)) {
+        return false;
+    }
+    
+    return response.status == StatusCode::SUCCESS;
+}
+
+bool Client::admin_shutdown() {
+    Request request(OpCode::ADMIN_SHUTDOWN, std::vector<uint8_t>());
     Response response;
     
     if (!send_request(request, response)) {

@@ -99,7 +99,7 @@ void ChordServer::stop() {
     Server::stop();
 }
 
-void ChordServer::process_chord_request(int client_fd, const Request& request) {
+void ChordServer::process_request(int client_fd, const Request& request) {
     Response response;
     
     if (handle_chord_operation(request, response)) {
@@ -107,7 +107,7 @@ void ChordServer::process_chord_request(int client_fd, const Request& request) {
         send_data(client_fd, encoded);
     } else {
         // Handle as regular storage operation
-        process_request(client_fd, request);
+        Server::process_request(client_fd, request);
     }
 }
 
@@ -182,6 +182,18 @@ bool ChordServer::handle_chord_operation(const Request& request, Response& respo
             std::string node_str = info.address + ":" + std::to_string(info.port);
             response.value.assign(node_str.begin(), node_str.end());
             response.status = StatusCode::SUCCESS;
+            return true;
+        }
+        
+        case OpCode::ADMIN_SHUTDOWN: {
+            response.status = StatusCode::SUCCESS;
+            // Schedule shutdown in a separate thread to allow response to be sent
+            std::thread shutdown_thread([this]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::cout << "Admin shutdown requested. Stopping server..." << std::endl;
+                this->stop();
+            });
+            shutdown_thread.detach();
             return true;
         }
         

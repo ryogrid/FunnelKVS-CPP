@@ -33,7 +33,7 @@ public:
     void stop() override;
     
 protected:
-    void process_chord_request(int client_fd, const Request& request);
+    void process_request(int client_fd, const Request& request) override;
     bool handle_chord_operation(const Request& request, Response& response);
     
     // Chord network operations

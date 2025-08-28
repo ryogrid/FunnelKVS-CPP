@@ -22,7 +22,8 @@ enum class OpCode : uint8_t {
     GET_PREDECESSOR = 0x22,
     GET_SUCCESSOR = 0x23,
     CLOSEST_PRECEDING_NODE = 0x24,
-    NODE_INFO = 0x25
+    NODE_INFO = 0x25,
+    ADMIN_SHUTDOWN = 0x30
 };
 
 enum class StatusCode : uint8_t {

@@ -27,6 +27,7 @@ public:
     bool get(const std::string& key, std::vector<uint8_t>& value);
     bool remove(const std::string& key);
     bool ping();
+    bool admin_shutdown();
     
 private:
     bool send_request(const Request& request, Response& response);
