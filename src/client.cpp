@@ -5,6 +5,9 @@
 #include <unistd.h>
 #include <cstring>
 #include <iostream>
+#include <fcntl.h>
+#include <errno.h>
+#include <poll.h>
 
 namespace funnelkvs {
 
@@ -26,6 +29,20 @@ bool Client::connect() {
         return false;
     }
     
+    // Set socket to non-blocking mode for timeout control
+    int flags = fcntl(socket_fd, F_GETFL, 0);
+    if (flags < 0) {
+        close(socket_fd);
+        socket_fd = -1;
+        return false;
+    }
+    
+    if (fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(socket_fd);
+        socket_fd = -1;
+        return false;
+    }
+    
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(server_port);
@@ -36,11 +53,55 @@ bool Client::connect() {
         return false;
     }
     
-    if (::connect(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    int connect_result = ::connect(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    
+    if (connect_result == 0) {
+        // Connected immediately (unlikely but possible for localhost)
+        // Restore blocking mode
+        fcntl(socket_fd, F_SETFL, flags);
+        connected = true;
+        return true;
+    }
+    
+    if (errno != EINPROGRESS) {
+        // Real error
         close(socket_fd);
         socket_fd = -1;
         return false;
     }
+    
+    // Connection in progress, wait with timeout (1 second)
+    struct pollfd pfd;
+    pfd.fd = socket_fd;
+    pfd.events = POLLOUT;
+    
+    int poll_result = poll(&pfd, 1, 1000); // 1000ms timeout
+    
+    if (poll_result <= 0) {
+        // Timeout or error
+        close(socket_fd);
+        socket_fd = -1;
+        return false;
+    }
+    
+    // Check if connection succeeded
+    int socket_error;
+    socklen_t len = sizeof(socket_error);
+    if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &socket_error, &len) < 0) {
+        close(socket_fd);
+        socket_fd = -1;
+        return false;
+    }
+    
+    if (socket_error != 0) {
+        // Connection failed
+        close(socket_fd);
+        socket_fd = -1;
+        return false;
+    }
+    
+    // Restore blocking mode
+    fcntl(socket_fd, F_SETFL, flags);
     
     connected = true;
     return true;

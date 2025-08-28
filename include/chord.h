@@ -11,6 +11,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 
 namespace funnelkvs {
 
@@ -57,6 +58,10 @@ private:
     std::thread stabilize_thread;
     std::thread fix_fingers_thread;
     std::thread failure_detection_thread;
+    
+    // Thread synchronization
+    std::mutex shutdown_mutex;
+    std::condition_variable shutdown_cv;
     
     int next_finger_to_fix;
     std::chrono::milliseconds stabilize_interval;
@@ -134,6 +139,9 @@ private:
     
     // Helper methods
     std::vector<std::shared_ptr<NodeInfo>> get_successor_nodes(int count) const;
+    
+    // Thread management helpers
+    bool interruptible_sleep(std::chrono::milliseconds duration);
 };
 
 } // namespace funnelkvs

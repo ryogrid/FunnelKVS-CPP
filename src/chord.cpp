@@ -115,6 +115,9 @@ void ChordNode::stop_maintenance() {
     
     running.store(false);
     
+    // Wake up any sleeping threads
+    shutdown_cv.notify_all();
+    
     if (stabilize_thread.joinable()) {
         stabilize_thread.join();
     }
@@ -193,23 +196,29 @@ std::shared_ptr<NodeInfo> ChordNode::closest_preceding_node(const Hash160& id) {
 }
 
 void ChordNode::stabilize() {
-    std::lock_guard<std::mutex> lock(routing_mutex);
+    std::shared_ptr<NodeInfo> successor;
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        successor = successor_list[0];
+    }
     
-    auto successor = successor_list[0];
     if (!successor || *successor == self_info) {
         return;
     }
     
-    // Ask successor for its predecessor
+    // Ask successor for its predecessor (without holding mutex)
     auto x = contact_node(successor, "get_predecessor");
     
-    if (x && *x != self_info && in_range(x->id, self_info.id, successor->id, false)) {
-        // Update successor
-        successor_list[0] = x;
-        successor = x;
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        if (x && *x != self_info && in_range(x->id, self_info.id, successor->id, false)) {
+            // Update successor
+            successor_list[0] = x;
+            successor = x;
+        }
     }
     
-    // Notify successor about this node
+    // Notify successor about this node (without holding mutex)
     if (successor && *successor != self_info) {
         contact_node(successor, "notify", self_info.id);
     }
@@ -230,15 +239,22 @@ void ChordNode::notify(std::shared_ptr<NodeInfo> node) {
 }
 
 void ChordNode::fix_fingers() {
-    std::lock_guard<std::mutex> lock(routing_mutex);
+    int finger_index;
+    Hash160 finger_start;
     
-    next_finger_to_fix = (next_finger_to_fix + 1) % FINGER_TABLE_SIZE;
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        next_finger_to_fix = (next_finger_to_fix + 1) % FINGER_TABLE_SIZE;
+        finger_index = next_finger_to_fix;
+        finger_start = get_finger_start(finger_index);
+    }
     
-    Hash160 finger_start = get_finger_start(next_finger_to_fix);
+    // Call find_successor without holding mutex (it may do network operations)
     auto successor = find_successor(finger_start);
     
     if (successor) {
-        finger_table[next_finger_to_fix] = successor;
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        finger_table[finger_index] = successor;
     }
 }
 
@@ -253,14 +269,18 @@ bool ChordNode::store_key(const std::string& key, const std::vector<uint8_t>& va
         auto replicas = get_replica_nodes(key_id);
         
         // Synchronous replication as specified in DESIGN.md
+        // Must complete replication before returning success
         if (!replicas.empty()) {
             bool replication_success = replication_manager->replicate_put(key, value, replicas);
             if (!replication_success) {
-                std::cerr << "Warning: Replication failed for key '" << key << "'" << std::endl;
-                // Continue with local storage success
+                // Replication failed - rollback local storage and return failure
+                local_storage->remove(key);
+                std::cerr << "Error: Synchronous replication failed for key '" << key << "'" << std::endl;
+                return false;
             }
         }
         
+        // Replication successful (or no replicas needed)
         return true;
     } else {
         // Forward to responsible node
@@ -319,19 +339,31 @@ bool ChordNode::remove_key(const std::string& key) {
     Hash160 key_id = SHA1::hash(key);
     
     if (is_responsible_for_key(key_id)) {
-        // Remove from local storage first
-        bool local_removed = local_storage->remove(key);
+        // Check if key exists before attempting deletion
+        std::vector<uint8_t> dummy;
+        if (!local_storage->get(key, dummy)) {
+            return false; // Key doesn't exist
+        }
         
-        // Remove from replicas
+        // Remove from local storage
+        bool local_removed = local_storage->remove(key);
+        if (!local_removed) {
+            return false;
+        }
+        
+        // Synchronously remove from replicas
         auto replicas = get_replica_nodes(key_id);
         if (!replicas.empty()) {
             bool replication_success = replication_manager->replicate_delete(key, replicas);
             if (!replication_success) {
-                std::cerr << "Warning: Replication delete failed for key '" << key << "'" << std::endl;
+                // For delete, we've already removed locally
+                // Log error but don't fail the operation
+                std::cerr << "Warning: Synchronous replication delete failed for key '" << key 
+                          << "' - local deletion succeeded but some replicas may be inconsistent" << std::endl;
             }
         }
         
-        return local_removed;
+        return true;
     } else {
         // Forward to responsible node
         auto responsible = find_successor(key_id);
@@ -397,7 +429,11 @@ void ChordNode::stabilize_loop() {
         } catch (const std::exception& e) {
             std::cerr << "Error in stabilize: " << e.what() << std::endl;
         }
-        std::this_thread::sleep_for(stabilize_interval);
+        
+        // Use interruptible sleep - returns true if interrupted
+        if (interruptible_sleep(stabilize_interval)) {
+            break; // Shutdown requested
+        }
     }
 }
 
@@ -408,34 +444,50 @@ void ChordNode::fix_fingers_loop() {
         } catch (const std::exception& e) {
             std::cerr << "Error in fix_fingers: " << e.what() << std::endl;
         }
-        std::this_thread::sleep_for(fix_fingers_interval);
+        
+        // Use interruptible sleep - returns true if interrupted
+        if (interruptible_sleep(fix_fingers_interval)) {
+            break; // Shutdown requested
+        }
     }
 }
 
 void ChordNode::failure_detection_loop() {
     while (running.load()) {
         try {
-            // Check successor and predecessor health
+            // Copy nodes to check (avoid holding mutex during network operations)
+            std::vector<std::shared_ptr<NodeInfo>> nodes_to_check;
             {
                 std::lock_guard<std::mutex> lock(routing_mutex);
                 
-                // Check successor list
+                // Copy successor list nodes
                 for (auto& successor : successor_list) {
                     if (successor && *successor != self_info) {
-                        failure_detector->ping_node(successor);
-                        if (failure_detector->is_node_failed(successor)) {
-                            handle_node_failure(successor);
-                        }
+                        nodes_to_check.push_back(successor);
                     }
                 }
                 
-                // Check predecessor
+                // Copy predecessor
                 if (predecessor && *predecessor != self_info) {
-                    failure_detector->ping_node(predecessor);
-                    if (failure_detector->is_node_failed(predecessor)) {
-                        handle_node_failure(predecessor);
-                    }
+                    nodes_to_check.push_back(predecessor);
                 }
+            }
+            
+            // Check nodes without holding mutex (avoid deadlock)
+            std::vector<std::shared_ptr<NodeInfo>> failed_nodes;
+            for (auto& node : nodes_to_check) {
+                if (!running.load()) break; // Check for shutdown during loop
+                
+                failure_detector->ping_node(node);
+                if (failure_detector->is_node_failed(node)) {
+                    failed_nodes.push_back(node);
+                }
+            }
+            
+            // Handle failures (this will reacquire mutex as needed)
+            for (auto& failed_node : failed_nodes) {
+                if (!running.load()) break;
+                handle_node_failure(failed_node);
             }
             
             // Cleanup old failure detection entries
@@ -444,7 +496,11 @@ void ChordNode::failure_detection_loop() {
         } catch (const std::exception& e) {
             std::cerr << "Error in failure_detection: " << e.what() << std::endl;
         }
-        std::this_thread::sleep_for(failure_check_interval);
+        
+        // Use interruptible sleep - returns true if interrupted
+        if (interruptible_sleep(failure_check_interval)) {
+            break; // Shutdown requested
+        }
     }
 }
 
@@ -565,6 +621,11 @@ std::vector<std::shared_ptr<NodeInfo>> ChordNode::get_successor_nodes(int count)
         }
     }
     return successors;
+}
+
+bool ChordNode::interruptible_sleep(std::chrono::milliseconds duration) {
+    std::unique_lock<std::mutex> lock(shutdown_mutex);
+    return shutdown_cv.wait_for(lock, duration, [this] { return !running.load(); });
 }
 
 void ChordNode::print_finger_table() const {

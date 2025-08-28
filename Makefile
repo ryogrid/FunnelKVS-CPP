@@ -56,7 +56,10 @@ $(BIN_DIR)/test_replication: $(TEST_DIR)/test_replication.cpp $(OBJECTS)
 $(BIN_DIR)/test_phase3_integration: $(TEST_DIR)/test_phase3_integration.cpp $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
 
-test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash $(BIN_DIR)/test_chord $(BIN_DIR)/test_integration $(BIN_DIR)/test_chord_integration $(BIN_DIR)/test_replication $(BIN_DIR)/test_phase3_integration
+$(BIN_DIR)/test_sync_replication: $(TEST_DIR)/test_sync_replication.cpp $(OBJECTS)
+	$(CXX) $(CXXFLAGS) $< $(OBJECTS) -o $@ $(LDFLAGS)
+
+test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash $(BIN_DIR)/test_chord $(BIN_DIR)/test_integration $(BIN_DIR)/test_chord_integration $(BIN_DIR)/test_replication $(BIN_DIR)/test_phase3_integration $(BIN_DIR)/test_sync_replication
 	@echo "Running unit tests..."
 	@$(BIN_DIR)/test_protocol
 	@echo ""
@@ -73,6 +76,8 @@ test: dirs $(BIN_DIR)/test_protocol $(BIN_DIR)/test_storage $(BIN_DIR)/test_hash
 	@$(BIN_DIR)/test_replication
 	@echo ""
 	@$(BIN_DIR)/test_phase3_integration
+	@echo ""
+	@$(BIN_DIR)/test_sync_replication
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
