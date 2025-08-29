@@ -85,7 +85,7 @@ log "Starting $NUM_NODES Chord servers..."
 # Start first node (creates new ring)
 port=$BASE_PORT
 log "Starting node 1 on port $port (new ring)"
-"$SERVER_TOOL" $port > "/tmp/chord_server_$port.log" 2>&1 &
+"$SERVER_TOOL" -p $port > "/tmp/chord_server_$port.log" 2>&1 &
 PIDS+=($!)
 sleep 3  # Wait for first node to establish ring
 
@@ -93,7 +93,7 @@ sleep 3  # Wait for first node to establish ring
 for ((i=2; i<=NUM_NODES; i++)); do
     port=$((BASE_PORT + i - 1))
     log "Starting node $i on port $port (joining ring via port $BASE_PORT)"
-    "$SERVER_TOOL" $port "127.0.0.1:$BASE_PORT" > "/tmp/chord_server_$port.log" 2>&1 &
+    "$SERVER_TOOL" -p $port -j "127.0.0.1:$BASE_PORT" > "/tmp/chord_server_$port.log" 2>&1 &
     PIDS+=($!)
     sleep 1  # Brief delay between node starts
 done
@@ -108,7 +108,7 @@ log "Testing connectivity to all nodes..."
 failed_nodes=0
 for ((i=1; i<=NUM_NODES; i++)); do
     port=$((BASE_PORT + i - 1))
-    if "$CLIENT_TOOL" 127.0.0.1 $port ping > /dev/null 2>&1; then
+    if "$CLIENT_TOOL" -h 127.0.0.1 -p $port ping > /dev/null 2>&1; then
         success "Node $i (port $port) is responding"
     else
         error "Node $i (port $port) is not responding"
@@ -137,7 +137,7 @@ for i in "${!test_keys[@]}"; do
     node_num=$(((i % NUM_NODES) + 1))
     port=$((BASE_PORT + node_num - 1))
     
-    if "$CLIENT_TOOL" 127.0.0.1 $port put "$key" "$value" > /dev/null 2>&1; then
+    if "$CLIENT_TOOL" -h 127.0.0.1 -p $port put "$key" "$value" > /dev/null 2>&1; then
         success "PUT successful: $key = $value (via node $node_num)"
     else
         error "PUT failed: $key = $value (via node $node_num)"
@@ -154,7 +154,7 @@ for i in "${!test_keys[@]}"; do
     node_num=$(((i + NUM_NODES/2) % NUM_NODES + 1))
     port=$((BASE_PORT + node_num - 1))
     
-    result=$("$CLIENT_TOOL" 127.0.0.1 $port get "$key" 2>/dev/null | grep "GET successful" | cut -d'=' -f2 | xargs)
+    result=$("$CLIENT_TOOL" -h 127.0.0.1 -p $port get "$key" 2>/dev/null)
     if [ "$result" = "$expected_value" ]; then
         success "GET successful: $key = $result (via node $node_num)"
     else
@@ -171,7 +171,7 @@ for i in "${!test_keys[@]}"; do
     node_num=$(((i + 1) % NUM_NODES + 1))
     port=$((BASE_PORT + node_num - 1))
     
-    if "$CLIENT_TOOL" 127.0.0.1 $port delete "$key" > /dev/null 2>&1; then
+    if "$CLIENT_TOOL" -h 127.0.0.1 -p $port delete "$key" > /dev/null 2>&1; then
         success "DELETE successful: $key (via node $node_num)"
     else
         error "DELETE failed: $key (via node $node_num)"
@@ -186,7 +186,7 @@ for i in "${!test_keys[@]}"; do
     node_num=$(((i + 2) % NUM_NODES + 1))
     port=$((BASE_PORT + node_num - 1))
     
-    if "$CLIENT_TOOL" 127.0.0.1 $port get "$key" > /dev/null 2>&1; then
+    if "$CLIENT_TOOL" -h 127.0.0.1 -p $port get "$key" > /dev/null 2>&1; then
         error "Key $key still exists after deletion (checked via node $node_num)"
         exit 1
     else
@@ -199,7 +199,7 @@ log "Shutting down all nodes using admin command..."
 shutdown_failed=0
 for ((i=1; i<=NUM_NODES; i++)); do
     port=$((BASE_PORT + i - 1))
-    if "$CLIENT_TOOL" 127.0.0.1 $port shutdown > /dev/null 2>&1; then
+    if "$CLIENT_TOOL" -h 127.0.0.1 -p $port shutdown > /dev/null 2>&1; then
         success "Node $i (port $port) shutdown command sent"
     else
         error "Failed to send shutdown command to node $i (port $port)"

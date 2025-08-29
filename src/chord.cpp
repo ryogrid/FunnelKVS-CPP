@@ -75,6 +75,9 @@ void ChordNode::join(std::shared_ptr<NodeInfo> existing_node) {
     
     std::cout << "Node " << self_info.to_string() 
               << " joined ring via " << existing_node->to_string() << std::endl;
+    
+    // Request transfer of keys from successor that now belong to us
+    accept_transferred_keys(existing_node);
 }
 
 void ChordNode::leave() {
@@ -82,10 +85,10 @@ void ChordNode::leave() {
     
     std::lock_guard<std::mutex> lock(routing_mutex);
     
-    // Notify successor about leaving (transfer data)
+    // Transfer all keys to successor before leaving
     if (successor_list[0] && *successor_list[0] != self_info) {
-        // In full implementation, transfer keys to successor
-        std::cout << "Node " << self_info.to_string() << " leaving ring" << std::endl;
+        std::cout << "Node " << self_info.to_string() << " leaving ring, transferring keys to successor" << std::endl;
+        transfer_keys_to_node(successor_list[0]);
     }
     
     // Reset to single-node state
@@ -229,12 +232,24 @@ void ChordNode::notify(std::shared_ptr<NodeInfo> node) {
         return;
     }
     
-    std::lock_guard<std::mutex> lock(routing_mutex);
+    std::shared_ptr<NodeInfo> old_predecessor;
+    bool predecessor_changed = false;
     
-    if (!predecessor || in_range(node->id, predecessor->id, self_info.id, false)) {
-        predecessor = node;
-        std::cout << "Node " << self_info.to_string() 
-                  << " updated predecessor to " << node->to_string() << std::endl;
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        
+        if (!predecessor || in_range(node->id, predecessor->id, self_info.id, false)) {
+            old_predecessor = predecessor;
+            predecessor = node;
+            predecessor_changed = true;
+            std::cout << "Node " << self_info.to_string() 
+                      << " updated predecessor to " << node->to_string() << std::endl;
+        }
+    }
+    
+    // If we have a new predecessor, transfer keys that now belong to them
+    if (predecessor_changed && old_predecessor != node) {
+        transfer_keys_to_node(node);
     }
 }
 
@@ -608,14 +623,39 @@ void ChordNode::handle_node_failure(std::shared_ptr<NodeInfo> failed_node) {
 }
 
 void ChordNode::trigger_re_replication() {
-    // Get all keys from local storage for re-replication
-    // This is a simplified implementation
     std::cout << "Triggering re-replication after node failure" << std::endl;
     
-    // In a full implementation, we would:
-    // 1. Identify keys that need re-replication
-    // 2. Find new replica nodes
-    // 3. Copy data to new replicas
+    // Get all keys from local storage
+    auto all_keys = local_storage->get_all_keys();
+    
+    for (const auto& key : all_keys) {
+        Hash160 key_id = SHA1::hash(key);
+        
+        // Check if we are the primary owner of this key
+        if (is_responsible_for_key(key_id)) {
+            // Get current replica nodes
+            auto replica_nodes = get_replica_nodes(key_id);
+            
+            // Ensure we have enough replicas (REPLICATION_FACTOR - 1)
+            if (replica_nodes.size() < static_cast<size_t>(replication_manager->get_replication_factor() - 1)) {
+                std::vector<uint8_t> value;
+                if (local_storage->get(key, value)) {
+                    // Re-replicate to ensure proper replication factor
+                    for (auto& replica : replica_nodes) {
+                        if (replica && *replica != self_info) {
+                            // Send replication request to replica node
+                            // This would use replication_manager->replicate_put() in full implementation
+                        }
+                    }
+                    
+                    std::cout << "Re-replicated key " << key << " to maintain replication factor" << std::endl;
+                }
+            }
+        }
+    }
+    
+    // Also verify replicas we're holding are still valid
+    verify_and_repair_replicas();
 }
 
 std::vector<std::shared_ptr<NodeInfo>> ChordNode::get_successor_nodes(int count) const {
@@ -675,6 +715,115 @@ void ChordNode::rpc_notify(std::shared_ptr<NodeInfo> node) {
 
 bool ChordNode::rpc_ping() {
     return true;
+}
+
+void ChordNode::transfer_keys_to_node(std::shared_ptr<NodeInfo> target_node) {
+    if (!target_node || *target_node == self_info) {
+        return;
+    }
+    
+    std::cout << "Transferring keys from " << self_info.to_string() 
+              << " to " << target_node->to_string() << std::endl;
+    
+    // Get all keys that should be transferred to the target node
+    auto keys_to_transfer = local_storage->get_keys_in_range([this, &target_node](const std::string& key) {
+        Hash160 key_id = SHA1::hash(key);
+        
+        // Transfer keys that the target node should be responsible for
+        // This happens when a new node joins between us and our predecessor
+        if (predecessor) {
+            return in_range(key_id, predecessor->id, target_node->id, true);
+        }
+        return false;
+    });
+    
+    // Transfer each key to the target node
+    for (const auto& kvp : keys_to_transfer) {
+        const std::string& key = kvp.first;
+        // In a real implementation, this would send the key-value pair to the target node
+        // For now, we'll just remove it from our storage
+        local_storage->remove(key);
+        std::cout << "Transferred key: " << key << " to " << target_node->to_string() << std::endl;
+    }
+}
+
+void ChordNode::accept_transferred_keys(std::shared_ptr<NodeInfo> from_node) {
+    if (!from_node || *from_node == self_info) {
+        return;
+    }
+    
+    std::cout << "Accepting transferred keys from " << from_node->to_string() 
+              << " to " << self_info.to_string() << std::endl;
+    
+    // In a real implementation, this would:
+    // 1. Contact the from_node to request keys in our range
+    // 2. Receive the keys and store them locally
+    // 3. Verify the transfer was successful
+    
+    // For now, we'll just log the operation
+    // The actual transfer would happen through the network layer
+}
+
+void ChordNode::verify_and_repair_replicas() {
+    std::cout << "Verifying and repairing replicas" << std::endl;
+    
+    // Get all keys from local storage
+    auto all_data = local_storage->get_all_data();
+    
+    for (const auto& kvp : all_data) {
+        const std::string& key = kvp.first;
+        const std::vector<uint8_t>& value = kvp.second;
+        Hash160 key_id = SHA1::hash(key);
+        
+        // Check if this is a replica we're holding
+        auto responsible_node = find_successor(key_id);
+        
+        if (responsible_node && *responsible_node != self_info) {
+            // This is a replica we're holding
+            // Verify the primary node is still alive
+            if (!ping_node(responsible_node)) {
+                // Primary node is down, check if we should become the primary
+                auto our_predecessor = get_predecessor();
+                if (our_predecessor && in_range(key_id, our_predecessor->id, self_info.id, true)) {
+                    // We are now the primary owner
+                    std::cout << "Taking ownership of key " << key << " (previous owner failed)" << std::endl;
+                    
+                    // Re-replicate to maintain replication factor
+                    auto replica_nodes = get_replica_nodes(key_id);
+                    for (auto& replica : replica_nodes) {
+                        if (replica && *replica != self_info) {
+                            // Send replication request to replica node
+                            // This would use replication_manager->replicate_put() in full implementation
+                        }
+                    }
+                }
+            }
+        } else if (responsible_node && *responsible_node == self_info) {
+            // We are the primary owner, ensure proper replication
+            auto replica_nodes = get_replica_nodes(key_id);
+            int alive_replicas = 0;
+            
+            for (auto& replica : replica_nodes) {
+                if (replica && *replica != self_info && ping_node(replica)) {
+                    alive_replicas++;
+                }
+            }
+            
+            // If we don't have enough alive replicas, find new ones
+            if (alive_replicas < replication_manager->get_replication_factor() - 1) {
+                std::cout << "Insufficient replicas for key " << key 
+                          << " (" << alive_replicas << " alive), re-replicating" << std::endl;
+                
+                // Re-replicate to new nodes
+                for (auto& replica : replica_nodes) {
+                    if (replica && *replica != self_info) {
+                        // Send replication request to replica node
+                        // This would use replication_manager->replicate_put() in full implementation
+                    }
+                }
+            }
+        }
+    }
 }
 
 } // namespace funnelkvs

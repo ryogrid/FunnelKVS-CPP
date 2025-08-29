@@ -6,6 +6,7 @@
 #include <string>
 #include <mutex>
 #include <memory>
+#include <functional>
 
 namespace funnelkvs {
 
@@ -27,6 +28,12 @@ public:
     void clear();
     size_t size() const;
     bool exists(const std::string& key) const;
+    
+    // Methods for data migration and re-replication
+    std::vector<std::string> get_all_keys() const;
+    std::unordered_map<std::string, std::vector<uint8_t>> get_all_data() const;
+    std::unordered_map<std::string, std::vector<uint8_t>> get_keys_in_range(
+        const std::function<bool(const std::string&)>& predicate) const;
 };
 
 } // namespace funnelkvs

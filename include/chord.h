@@ -140,6 +140,11 @@ private:
     // Helper methods
     std::vector<std::shared_ptr<NodeInfo>> get_successor_nodes(int count) const;
     
+    // Data transfer methods
+    void transfer_keys_to_node(std::shared_ptr<NodeInfo> target_node);
+    void accept_transferred_keys(std::shared_ptr<NodeInfo> from_node);
+    void verify_and_repair_replicas();
+    
     // Thread management helpers
     bool interruptible_sleep(std::chrono::milliseconds duration);
 };
