@@ -6,82 +6,126 @@
 classDiagram
     %% Core Server Architecture
     class Server {
-        -Storage storage
-        -ThreadPool thread_pool
-        -int server_fd
-        -atomic<bool> running
-        -thread accept_thread
-        -uint16_t port
+        #Storage storage
+        #ThreadPool thread_pool
+        #int server_fd
+        #atomic~bool~ running
+        #thread accept_thread
+        #uint16_t port
+        +Server(port, num_threads)
+        +~Server() virtual
         +start() virtual
         +stop() virtual
-        +process_request(client_fd, request) virtual
-        -accept_connections()
-        -handle_client(client_fd)
+        +is_running() bool
+        #process_request(client_fd, request) virtual
+        #accept_loop()
+        #handle_client(client_fd)
+        #receive_data(fd, buffer, size) bool
+        #send_data(fd, data) bool
+        -setup_server_socket()
     }
 
     class ThreadPool {
-        -vector<thread> workers
-        -queue<function> tasks
+        -vector~thread~ workers
+        -queue~function~ tasks
         -mutex queue_mutex
         -condition_variable condition
-        -atomic<bool> stop
+        -atomic~bool~ stop
+        +ThreadPool(num_threads)
+        +~ThreadPool()
         +enqueue(task)
         -worker_thread()
     }
 
     class Storage {
-        -unordered_map<string, vector<uint8_t>> data
+        -unordered_map~string, vector~uint8_t~~ data
         -mutable mutex mutex
-        +get(key, value) const
+        +Storage()
+        +~Storage()
+        +get(key, value) bool
         +put(key, value)
-        +remove(key)
+        +remove(key) bool
         +clear()
-        +size() const
-        +exists(key) const
+        +size() size_t
+        +exists(key) bool
+        +get_all_keys() vector~string~
+        +get_all_data() unordered_map
+        +get_keys_in_range(predicate) unordered_map
     }
 
     %% Chord DHT Implementation
     class ChordServer {
-        -unique_ptr<ChordNode> chord_node
+        -unique_ptr~ChordNode~ chord_node
         -bool chord_enabled
+        +ChordServer(address, port, num_threads)
+        +~ChordServer()
+        +setup_chord_node(address)
         +enable_chord()
         +disable_chord()
         +create_ring()
-        +join_ring(address, port)
+        +join_ring(known_address, known_port)
         +leave_ring()
-        +get_node_info()
-        +process_request(client_fd, request) override
-        +handle_chord_operation(request, response)
-        -setup_chord_node(address)
+        +get_node_info() NodeInfo
+        +start() override
+        +stop() override
+        #process_request(client_fd, request) override
+        -handle_chord_operation(request, response) bool
+        -remote_find_successor(target, id) shared_ptr~NodeInfo~
+        -remote_get_predecessor(target) shared_ptr~NodeInfo~
+        -remote_notify(target, node) bool
+        -remote_ping(target) bool
     }
 
     class ChordNode {
         -NodeInfo self_info
-        -shared_ptr<NodeInfo> predecessor
-        -vector<shared_ptr<NodeInfo>> successor_list
-        -vector<shared_ptr<NodeInfo>> finger_table
+        -shared_ptr~NodeInfo~ predecessor
+        -vector~shared_ptr~NodeInfo~~ successor_list
+        -vector~shared_ptr~NodeInfo~~ finger_table
         -mutable mutex routing_mutex
-        -unique_ptr<Storage> local_storage
-        -unique_ptr<ReplicationManager> replication_manager
-        -unique_ptr<FailureDetector> failure_detector
-        -atomic<bool> running
+        -unique_ptr~Storage~ local_storage
+        -unique_ptr~ReplicationManager~ replication_manager
+        -unique_ptr~FailureDetector~ failure_detector
+        -atomic~bool~ running
         -thread stabilize_thread
         -thread fix_fingers_thread
         -thread failure_detection_thread
         -mutex shutdown_mutex
         -condition_variable shutdown_cv
-        +find_successor(id)
-        +get_predecessor()
-        +notify(node)
-        +is_responsible_for_key(key_id)
-        +store_key(key, value)
-        +retrieve_key(key, value)
-        +remove_key(key)
+        +ChordNode(address, port)
+        +~ChordNode()
+        +create()
+        +join(existing_node)
+        +leave()
         +start_maintenance()
         +stop_maintenance()
-        -stabilize()
-        -fix_fingers()
-        -check_predecessor()
+        +find_successor(id) shared_ptr~NodeInfo~
+        +find_predecessor(id) shared_ptr~NodeInfo~
+        +closest_preceding_node(id) shared_ptr~NodeInfo~
+        +get_predecessor() shared_ptr~NodeInfo~
+        +get_successor() shared_ptr~NodeInfo~
+        +notify(node)
+        +stabilize()
+        +fix_fingers()
+        +is_responsible_for_key(key_id) bool
+        +store_key(key, value) bool
+        +retrieve_key(key, value) bool
+        +remove_key(key) bool
+        +get_replica_nodes(key_id) vector
+        +handle_node_failure(failed_node)
+        +trigger_re_replication()
+        +transfer_keys_to_node(target_node)
+        +accept_transferred_keys(from_node)
+        +verify_and_repair_replicas()
+        -initialize_finger_table()
+        -update_finger_table_entry(index, node)
+        -stabilize_loop()
+        -fix_fingers_loop()
+        -failure_detection_loop()
+        -get_finger_start(index) Hash160
+        -contact_node(node, operation, param) shared_ptr~NodeInfo~
+        -ping_node(node) bool
+        -get_successor_nodes(count) vector
+        -interruptible_sleep(duration) bool
     }
 
     class NodeInfo {
@@ -98,22 +142,37 @@ classDiagram
     class ReplicationManager {
         -ReplicationConfig config
         -mutable mutex mutex
-        -unordered_map<string, time_point> replication_timestamps
-        +replicate_put(key, value, replicas)
-        +replicate_delete(key, replicas)
-        +get_from_replicas(key, value, replicas)
-        +set_config(config)
-        +get_config()
+        -unordered_map~string, time_point~ replication_timestamps
+        +ReplicationManager()
+        +ReplicationManager(config)
+        +~ReplicationManager()
+        +replicate_put(key, value, replicas) bool
+        +replicate_delete(key, replicas) bool
+        +get_from_replicas(key, value, replicas) bool
+        +handle_replica_failure(failed_node, new_replicas, keys_to_replicate)
+        +set_replication_factor(factor)
+        +get_replication_factor() int
+        +get_replication_count() size_t
+        +ping_node(node) bool
+        -send_replication_request(target, operation, key, value) bool
     }
 
     class FailureDetector {
-        -unordered_map<string, time_point> last_seen
-        -chrono::milliseconds timeout_duration
+        -FailureConfig config
         -mutable mutex mutex
-        +mark_alive(node_id)
-        +is_alive(node_id)
-        +get_failed_nodes()
-        +set_timeout(duration)
+        -unordered_map~string, NodeStatus~ node_statuses
+        +FailureDetector()
+        +FailureDetector(config)
+        +~FailureDetector()
+        +ping_node(node)
+        +mark_node_responsive(node)
+        +mark_node_failed(node)
+        +is_node_failed(node) bool
+        +is_node_suspected(node) bool
+        +get_failed_nodes() vector
+        +cleanup_old_entries(max_age)
+        -get_node_key(node) string
+        -ping_node_impl(node) bool
     }
 
     %% Client and Protocol
@@ -122,31 +181,38 @@ classDiagram
         -uint16_t server_port
         -int socket_fd
         -bool connected
-        +connect()
+        +Client(host, port)
+        +~Client()
+        +connect() bool
         +disconnect()
-        +put(key, value)
-        +get(key, value)
-        +remove(key)
-        +ping()
-        +admin_shutdown()
-        -send_request(request, response)
-        -send_data(data)
-        -receive_data(buffer, size)
+        +is_connected() bool
+        +put(key, value) bool
+        +get(key, value) bool
+        +remove(key) bool
+        +ping() bool
+        +admin_shutdown() bool
+        -send_request(request, response) bool
+        -send_data(data) bool
+        -receive_data(buffer, size) bool
     }
 
     class Protocol {
-        +encodeRequest(request)$ vector<uint8_t>
+        +encodeRequest(request)$ vector~uint8_t~
         +decodeRequest(data, request)$ bool
-        +encodeResponse(response)$ vector<uint8_t>
+        +encodeResponse(response)$ vector~uint8_t~
         +decodeResponse(data, response)$ bool
+        -readUInt32BE(data, offset)$ uint32_t
+        -writeUInt32BE(value, data, offset)$
     }
 
     %% Hash and Utilities
     class SHA1 {
         +hash(input)$ Hash160
+        +hash(data, size)$ Hash160
         +to_string(hash)$ string
         +from_string(hex_str)$ Hash160
         -process_block(block, h)$
+        -pad_message(input, padded)$
     }
 
     %% Data Structures
@@ -227,6 +293,11 @@ The FunnelKVS-CPP system employs a sophisticated multi-threaded architecture des
 - **Mutex Type:** `mutable std::mutex mutex`
 - **Strategy:** Fine-grained locking using RAII pattern with `std::lock_guard`
 - **Reasoning:** All public methods acquire the mutex before accessing the hash map. Uses `mutable` to allow const methods to lock, enabling thread-safe read operations.
+
+**New Methods for Data Transfer:**
+- `get_all_keys()` - Returns all keys for migration
+- `get_all_data()` - Returns complete data snapshot
+- `get_keys_in_range()` - Filters keys based on predicate for selective transfer
 
 ```cpp
 // Example synchronization pattern

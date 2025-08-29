@@ -21,7 +21,7 @@ This document provides detailed sequence diagrams and explanations for the key c
 
 ## Communication Sequence Diagrams
 
-### 1. Node Join Operation
+### 1. Node Join Operation with Data Transfer
 
 ```mermaid
 sequenceDiagram
@@ -52,6 +52,14 @@ sequenceDiagram
     NewNode->>NewNode: set successor = responsible node
     NewNode->>NewNode: initialize_finger_table()
     NewNode->>NewNode: predecessor = null
+    
+    Note over NewNode: Accept transferred keys
+    NewNode->>Successor: accept_transferred_keys()
+    activate Successor
+    Successor->>Successor: get_keys_in_range(predicate)
+    Successor->>Successor: identify keys that belong to NewNode
+    Successor-->>NewNode: transfer relevant keys
+    deactivate Successor
     
     Note over NewNode: Start periodic maintenance
     NewNode->>NewNode: start stabilize_thread
@@ -115,7 +123,7 @@ sequenceDiagram
     deactivate NodeC
 ```
 
-### 3. Ring Stabilization Process
+### 3. Ring Stabilization Process with Data Transfer
 
 ```mermaid
 sequenceDiagram
@@ -146,15 +154,23 @@ sequenceDiagram
         
         alt NodeA is better predecessor
             NodeX->>NodeX: update predecessor = NodeA
-            NodeX-->>NodeA: ACK
             Note over NodeX: Predecessor updated
+            
+            NodeX->>NodeX: transfer_keys_to_node(NodeA)
+            NodeX->>NodeX: get_keys_in_range(predicate)
+            NodeX->>NodeA: transfer keys that belong to NodeA
+            activate NodeA
+            NodeA->>NodeA: store transferred keys
+            NodeA-->>NodeX: ACK
+            deactivate NodeA
+            NodeX-->>NodeA: transfer complete
         else Keep current predecessor
             NodeX-->>NodeA: ACK (no change)
         end
         deactivate NodeX
     end
     
-    Note over NodeA, NodeX: Ring topology stabilizes over time
+    Note over NodeA, NodeX: Ring topology stabilizes with proper data distribution
 ```
 
 ### 4. Data Operation with Replication
@@ -205,7 +221,7 @@ sequenceDiagram
     deactivate PrimaryNode
 ```
 
-### 5. Failure Detection and Recovery
+### 5. Failure Detection and Re-replication
 
 ```mermaid
 sequenceDiagram
@@ -224,7 +240,7 @@ sequenceDiagram
         deactivate NodeB
         
         NodeA->>NodeA: mark NodeB as failed
-        NodeA->>NodeA: get_failed_nodes()
+        NodeA->>NodeA: handle_node_failure(NodeB)
         
         alt NodeB is immediate successor
             Note over NodeA: Need to update successor
@@ -238,23 +254,36 @@ sequenceDiagram
             
             NodeA->>NodeA: update successor = NodeC
             
-            Note over NodeA: Trigger stabilization
-            NodeA->>NodeA: stabilize()
+            Note over NodeA: Trigger re-replication
+            NodeA->>NodeA: trigger_re_replication()
+            NodeA->>NodeA: get_all_keys()
+            
+            loop For each key where NodeA is primary
+                NodeA->>NodeA: get_replica_nodes(key_id)
+                NodeA->>NodeA: check replica count
+                
+                alt Insufficient replicas
+                    NodeA->>NodeC: REPLICATE key=value
+                    activate NodeC
+                    NodeC->>NodeC: store replica
+                    NodeC-->>NodeA: ACK
+                    deactivate NodeC
+                    
+                    NodeA->>NodeD: REPLICATE key=value
+                    activate NodeD
+                    NodeD->>NodeD: store replica
+                    NodeD-->>NodeA: ACK
+                    deactivate NodeD
+                end
+            end
+            
+            Note over NodeA: Verify and repair replicas
+            NodeA->>NodeA: verify_and_repair_replicas()
         end
     end
     
-    Note over NodeA, NodeD: Failed nodes are bypassed
-    Note over NodeA, NodeD: Ring maintains connectivity
-    
-    NodeA->>NodeC: get_predecessor()
-    activate NodeC
-    alt NodeC still thinks B is predecessor
-        NodeC->>NodeB: ping() [timeout]
-        NodeC->>NodeC: mark B as failed
-        NodeC->>NodeC: find new predecessor
-    end
-    NodeC-->>NodeA: return current predecessor
-    deactivate NodeC
+    Note over NodeA, NodeD: Data durability maintained through re-replication
+    Note over NodeA, NodeD: Ring maintains connectivity and data consistency
 ```
 
 ### 6. Finger Table Maintenance
@@ -298,6 +327,57 @@ sequenceDiagram
     end
     
     Note over NodeA, NodeD: Finger table provides O(log N) routing
+```
+
+### 7. Graceful Node Departure with Data Transfer
+
+```mermaid
+sequenceDiagram
+    participant DepartingNode as Departing Node
+    participant Successor as Successor Node
+    participant Predecessor as Predecessor Node
+    participant Client as Client
+
+    Note over DepartingNode: Admin shutdown initiated
+    Client->>DepartingNode: ADMIN_SHUTDOWN
+    activate DepartingNode
+    DepartingNode-->>Client: SUCCESS
+    deactivate DepartingNode
+    
+    DepartingNode->>DepartingNode: leave()
+    DepartingNode->>DepartingNode: stop_maintenance()
+    
+    Note over DepartingNode: Transfer all data to successor
+    DepartingNode->>DepartingNode: get_all_data()
+    DepartingNode->>Successor: transfer_keys_to_node(all_keys)
+    activate Successor
+    
+    loop For each key-value pair
+        DepartingNode->>Successor: transfer key=value
+        Successor->>Successor: store(key, value)
+        Successor-->>DepartingNode: ACK
+    end
+    
+    Successor-->>DepartingNode: Transfer complete
+    deactivate Successor
+    
+    Note over DepartingNode: Notify predecessor and successor
+    DepartingNode->>Predecessor: update_successor(Successor)
+    activate Predecessor
+    Predecessor->>Predecessor: successor = Successor
+    Predecessor-->>DepartingNode: ACK
+    deactivate Predecessor
+    
+    DepartingNode->>Successor: update_predecessor(Predecessor)
+    activate Successor
+    Successor->>Successor: predecessor = Predecessor
+    Successor-->>DepartingNode: ACK
+    deactivate Successor
+    
+    DepartingNode->>DepartingNode: reset to single-node state
+    DepartingNode->>DepartingNode: shutdown server
+    
+    Note over Predecessor, Successor: Ring maintains consistency after departure
 ```
 
 ## Communication Protocol Details
