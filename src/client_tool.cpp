@@ -15,6 +15,7 @@ void print_usage(const char* program_name) {
     std::cout << "  get KEY          Retrieve value for a key" << std::endl;
     std::cout << "  delete KEY       Delete a key" << std::endl;
     std::cout << "  ping             Check server connectivity" << std::endl;
+    std::cout << "  shutdown         Shutdown the server (admin command)" << std::endl;
     std::cout << std::endl;
     std::cout << "Examples:" << std::endl;
     std::cout << "  " << program_name << " put mykey myvalue" << std::endl;
@@ -111,6 +112,14 @@ int main(int argc, char* argv[]) {
                 std::cout << "PONG" << std::endl;
             } else {
                 std::cerr << "Ping failed" << std::endl;
+                return 1;
+            }
+            
+        } else if (command == "shutdown") {
+            if (client.admin_shutdown()) {
+                std::cout << "Shutdown command sent successfully" << std::endl;
+            } else {
+                std::cerr << "Failed to send shutdown command" << std::endl;
                 return 1;
             }
             

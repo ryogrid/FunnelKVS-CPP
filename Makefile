@@ -10,15 +10,17 @@ BIN_DIR = bin
 
 SERVER_MAIN = $(SRC_DIR)/server_main.cpp
 CLIENT_MAIN = $(SRC_DIR)/client_main.cpp
+CHORD_SERVER_MAIN = $(SRC_DIR)/chord_server_main.cpp
+CLIENT_TOOL_MAIN = $(SRC_DIR)/client_tool.cpp
 
-SOURCES = $(filter-out $(SERVER_MAIN) $(CLIENT_MAIN), $(wildcard $(SRC_DIR)/*.cpp))
+SOURCES = $(filter-out $(SERVER_MAIN) $(CLIENT_MAIN) $(CHORD_SERVER_MAIN) $(CLIENT_TOOL_MAIN), $(wildcard $(SRC_DIR)/*.cpp))
 OBJECTS = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 TEST_SOURCES = $(wildcard $(TEST_DIR)/*.cpp)
 TEST_BINARIES = $(patsubst $(TEST_DIR)/%.cpp,$(BIN_DIR)/%,$(TEST_SOURCES))
 
 .PHONY: all clean test server client dirs
 
-all: dirs server client test
+all: dirs server client chord_server client_tool test
 
 dirs:
 	@mkdir -p $(BUILD_DIR) $(BIN_DIR)
@@ -31,6 +33,12 @@ server: dirs $(OBJECTS) $(SERVER_MAIN)
 
 client: dirs $(OBJECTS) $(CLIENT_MAIN)
 	$(CXX) $(CXXFLAGS) $(CLIENT_MAIN) $(OBJECTS) -o $(BIN_DIR)/funnelkvs-client $(LDFLAGS)
+
+chord_server: dirs $(OBJECTS) $(CHORD_SERVER_MAIN)
+	$(CXX) $(CXXFLAGS) $(CHORD_SERVER_MAIN) $(OBJECTS) -o $(BIN_DIR)/chord_server $(LDFLAGS)
+
+client_tool: dirs $(OBJECTS) $(CLIENT_TOOL_MAIN)
+	$(CXX) $(CXXFLAGS) $(CLIENT_TOOL_MAIN) $(OBJECTS) -o $(BIN_DIR)/client_tool $(LDFLAGS)
 
 $(BIN_DIR)/test_protocol: $(TEST_DIR)/test_protocol.cpp $(BUILD_DIR)/protocol.o
 	$(CXX) $(CXXFLAGS) $< $(BUILD_DIR)/protocol.o -o $@ $(LDFLAGS)

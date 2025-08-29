@@ -96,11 +96,21 @@ int main(int argc, char* argv[]) {
         
         server.start();
         
+        // Check if server is still running
         while (!shutdown_requested.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            // ChordServer::stop() may be called by ADMIN_SHUTDOWN
+            // Check if server is still running
+            if (!server.is_running()) {
+                std::cout << "Server has been stopped" << std::endl;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         
-        server.stop();
+        // Ensure server is stopped
+        if (server.is_running()) {
+            server.stop();
+        }
         g_server = nullptr;
         
     } catch (const std::exception& e) {
