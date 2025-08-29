@@ -40,13 +40,13 @@ FunnelKVS-CPP is a distributed key-value store that implements the Chord distrib
 git clone https://github.com/yourusername/FunnelKVS-CPP.git
 cd FunnelKVS-CPP
 
-# Build everything (server, client, and tests)
+# Build everything (chord_server, client_tool, and tests)
 make
 
 # Or build specific components
-make server    # Build server only
-make client    # Build client only
-make test      # Build and run all tests
+make chord_server  # Build Chord server only
+make client_tool   # Build client tool only
+make test          # Build and run all tests
 ```
 
 ### Running a Chord Cluster
@@ -80,15 +80,6 @@ make test      # Build and run all tests
 ./bin/client_tool -h 127.0.0.1 -p 20000 shutdown
 ```
 
-### Legacy Single-Node Server (Phase 1)
-
-```bash
-# Start legacy server with default settings (port 8001, 8 worker threads)
-./bin/funnelkvs-server
-
-# Use legacy client
-./bin/funnelkvs-client put mykey "Hello, World!"
-```
 
 ## 📖 Architecture
 
@@ -193,12 +184,11 @@ bash tests/test_10_node_cluster.sh  # Full 10-node cluster test
 
 | Target | Description |
 |--------|-------------|
-| `make` | Build everything (server, client, tests) |
-| `make server` | Build the server executable |
-| `make client` | Build the client executable |
+| `make` | Build everything (chord_server, client_tool, tests) |
+| `make chord_server` | Build the Chord server executable |
+| `make client_tool` | Build the client tool executable |
 | `make test` | Build and run all tests |
 | `make clean` | Remove all build artifacts |
-| `make help` | Show build system help |
 
 ## 📊 Performance
 
@@ -255,21 +245,6 @@ Commands:
   delete KEY       Delete key
   ping             Test server connectivity
   shutdown         Shutdown server remotely
-```
-
-### Legacy Server Options
-```bash
-./bin/funnelkvs-server [options]
-  -p PORT    Server port (default: 8001)
-  -t THREADS Number of worker threads (default: 8)
-  -h         Show help message
-```
-
-### Legacy Client Options
-```bash
-./bin/funnelkvs-client [options] command [arguments]
-  -h HOST    Server host (default: 127.0.0.1)
-  -p PORT    Server port (default: 8001)
 ```
 
 ## 🤝 Contributing
