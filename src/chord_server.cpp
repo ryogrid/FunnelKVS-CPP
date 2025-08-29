@@ -185,6 +185,14 @@ bool ChordServer::handle_chord_operation(const Request& request, Response& respo
             return true;
         }
         
+        case OpCode::TRANSFER_KEY: {
+            // Key transfer operation - store the received key-value pair
+            std::string key_str(request.key.begin(), request.key.end());
+            chord_node->receive_transferred_key(key_str, request.value);
+            response.status = StatusCode::SUCCESS;
+            return true;
+        }
+        
         case OpCode::ADMIN_SHUTDOWN: {
             response.status = StatusCode::SUCCESS;
             // Schedule shutdown in a separate thread to allow response to be sent

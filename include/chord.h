@@ -123,6 +123,17 @@ public:
     void print_finger_table() const;
     void print_successor_list() const;
     
+    // Helper methods
+    std::vector<std::shared_ptr<NodeInfo>> get_successor_nodes(int count) const;
+    
+    // Data transfer methods
+    void transfer_keys_to_node(std::shared_ptr<NodeInfo> target_node);
+    void receive_transferred_key(const std::string& key, const std::vector<uint8_t>& value);
+    void verify_and_repair_replicas();
+    
+    // Thread management helpers
+    bool interruptible_sleep(std::chrono::milliseconds duration);
+    
 private:
     void initialize_finger_table();
     void update_finger_table_entry(int index, std::shared_ptr<NodeInfo> node);
@@ -136,17 +147,10 @@ private:
                                           const std::string& operation,
                                           const Hash160& param = Hash160{});
     bool ping_node(std::shared_ptr<NodeInfo> node);
-    
-    // Helper methods
-    std::vector<std::shared_ptr<NodeInfo>> get_successor_nodes(int count) const;
-    
-    // Data transfer methods
-    void transfer_keys_to_node(std::shared_ptr<NodeInfo> target_node);
-    void accept_transferred_keys(std::shared_ptr<NodeInfo> from_node);
-    void verify_and_repair_replicas();
-    
-    // Thread management helpers
-    bool interruptible_sleep(std::chrono::milliseconds duration);
+
+private:
+    // Private helper methods
+    bool send_key_transfer(std::shared_ptr<NodeInfo> target, const std::string& key, const std::vector<uint8_t>& value);
 };
 
 } // namespace funnelkvs

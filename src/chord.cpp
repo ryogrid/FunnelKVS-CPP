@@ -3,6 +3,10 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 namespace funnelkvs {
 
@@ -76,8 +80,8 @@ void ChordNode::join(std::shared_ptr<NodeInfo> existing_node) {
     std::cout << "Node " << self_info.to_string() 
               << " joined ring via " << existing_node->to_string() << std::endl;
     
-    // Request transfer of keys from successor that now belong to us
-    accept_transferred_keys(existing_node);
+    // Keys will be transferred automatically when this node becomes 
+    // the predecessor of existing nodes during stabilization process
 }
 
 void ChordNode::leave() {
@@ -740,28 +744,90 @@ void ChordNode::transfer_keys_to_node(std::shared_ptr<NodeInfo> target_node) {
     // Transfer each key to the target node
     for (const auto& kvp : keys_to_transfer) {
         const std::string& key = kvp.first;
-        // In a real implementation, this would send the key-value pair to the target node
-        // For now, we'll just remove it from our storage
-        local_storage->remove(key);
-        std::cout << "Transferred key: " << key << " to " << target_node->to_string() << std::endl;
+        const std::vector<uint8_t>& value = kvp.second;
+        
+        // Send the key-value pair to the target node
+        if (send_key_transfer(target_node, key, value)) {
+            // Only remove from our storage if transfer was successful
+            local_storage->remove(key);
+            std::cout << "Successfully transferred key: " << key << " to " << target_node->to_string() << std::endl;
+        } else {
+            std::cout << "Failed to transfer key: " << key << " to " << target_node->to_string() << std::endl;
+        }
     }
 }
 
-void ChordNode::accept_transferred_keys(std::shared_ptr<NodeInfo> from_node) {
-    if (!from_node || *from_node == self_info) {
-        return;
+
+void ChordNode::receive_transferred_key(const std::string& key, const std::vector<uint8_t>& value) {
+    // Store the transferred key in local storage
+    local_storage->put(key, value);
+    std::cout << "Received transferred key: " << key << " to " << self_info.to_string() << std::endl;
+}
+
+bool ChordNode::send_key_transfer(std::shared_ptr<NodeInfo> target, const std::string& key, const std::vector<uint8_t>& value) {
+    if (!target || *target == self_info) {
+        return false;
     }
     
-    std::cout << "Accepting transferred keys from " << from_node->to_string() 
-              << " to " << self_info.to_string() << std::endl;
-    
-    // In a real implementation, this would:
-    // 1. Contact the from_node to request keys in our range
-    // 2. Receive the keys and store them locally
-    // 3. Verify the transfer was successful
-    
-    // For now, we'll just log the operation
-    // The actual transfer would happen through the network layer
+    try {
+        // Create socket connection to target node
+        int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (socket_fd == -1) {
+            return false;
+        }
+        
+        // Set socket timeout
+        struct timeval timeout;
+        timeout.tv_sec = 5;
+        timeout.tv_usec = 0;
+        setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        
+        // Connect to target node
+        struct sockaddr_in server_addr;
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(target->port);
+        
+        if (inet_pton(AF_INET, target->address.c_str(), &server_addr.sin_addr) <= 0) {
+            close(socket_fd);
+            return false;
+        }
+        
+        if (connect(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+            close(socket_fd);
+            return false;
+        }
+        
+        // Create and send transfer request
+        Request request;
+        request.opcode = OpCode::TRANSFER_KEY;
+        request.key.assign(key.begin(), key.end());
+        request.value = value;
+        
+        std::vector<uint8_t> request_data = Protocol::encodeRequest(request);
+        
+        if (send(socket_fd, request_data.data(), request_data.size(), 0) == -1) {
+            close(socket_fd);
+            return false;
+        }
+        
+        // Read response
+        uint8_t response_buffer[1024];
+        ssize_t bytes_received = recv(socket_fd, response_buffer, sizeof(response_buffer), 0);
+        
+        close(socket_fd);
+        
+        if (bytes_received > 0) {
+            Response response;
+            if (Protocol::decodeResponse(std::vector<uint8_t>(response_buffer, response_buffer + bytes_received), response)) {
+                return response.status == StatusCode::SUCCESS;
+            }
+        }
+        
+        return false;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 void ChordNode::verify_and_repair_replicas() {

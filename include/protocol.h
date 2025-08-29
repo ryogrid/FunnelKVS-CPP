@@ -17,6 +17,7 @@ enum class OpCode : uint8_t {
     NOTIFY = 0x12,
     PING = 0x13,
     REPLICATE = 0x14,
+    TRANSFER_KEY = 0x15,
     FIND_SUCCESSOR = 0x20,
     FIND_PREDECESSOR = 0x21,
     GET_PREDECESSOR = 0x22,
