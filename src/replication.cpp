@@ -6,16 +6,37 @@
 
 namespace funnelkvs {
 
-ReplicationManager::ReplicationManager(const ReplicationConfig& cfg) : config(cfg) {
+ReplicationManager::ReplicationManager(const ReplicationConfig& cfg) 
+    : config(cfg), running(false) {
+    if (config.enable_async_replication) {
+        start_async_processing();
+    }
+}
+
+ReplicationManager::~ReplicationManager() {
+    stop_async_processing();
 }
 
 bool ReplicationManager::replicate_put(const std::string& key, const std::vector<uint8_t>& value,
                                        const std::vector<std::shared_ptr<NodeInfo>>& replicas) {
-    std::lock_guard<std::mutex> lock(mutex);
+    // If async replication is enabled, enqueue the task and return immediately
+    if (config.enable_async_replication) {
+        ReplicationTask task(ReplicationTask::PUT, key, value, replicas);
+        enqueue_replication_task(task);
+        
+        // Record timestamp without holding main mutex
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            replication_timestamps[key] = std::chrono::steady_clock::now();
+        }
+        return true; // Async replication always returns success immediately
+    }
     
+    // Synchronous replication - perform network operations without holding lock
     int successful_replications = 0;
     int required_replications = std::min(config.replication_factor - 1, static_cast<int>(replicas.size()));
     
+    // Perform network operations without holding mutex
     for (int i = 0; i < required_replications; ++i) {
         if (!replicas[i] || replicas[i]->port == 0) {
             continue;
@@ -24,22 +45,19 @@ bool ReplicationManager::replicate_put(const std::string& key, const std::vector
         bool success = send_replication_request(replicas[i], "PUT", key, value);
         if (success) {
             successful_replications++;
-        }
-        
-        // For synchronous replication (DESIGN.md specifies sync replication)
-        if (!config.enable_async_replication && !success) {
+        } else {
             std::cerr << "Synchronous replication failed to " << replicas[i]->to_string() << std::endl;
         }
     }
     
-    // Record replication timestamp
-    replication_timestamps[key] = std::chrono::steady_clock::now();
+    // Record replication timestamp after network operations
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        replication_timestamps[key] = std::chrono::steady_clock::now();
+    }
     
-    // For sync replication, we need at least one successful replication
-    // For async replication, we accept partial failures
-    bool result = config.enable_async_replication ? 
-                  (successful_replications > 0) : 
-                  (successful_replications == required_replications);
+    // For sync replication, we need all replications to succeed
+    bool result = (successful_replications == required_replications);
     
     if (!result) {
         std::cerr << "Replication failed for key '" << key << "': " 
@@ -51,11 +69,24 @@ bool ReplicationManager::replicate_put(const std::string& key, const std::vector
 
 bool ReplicationManager::replicate_delete(const std::string& key,
                                           const std::vector<std::shared_ptr<NodeInfo>>& replicas) {
-    std::lock_guard<std::mutex> lock(mutex);
+    // If async replication is enabled, enqueue the task and return immediately
+    if (config.enable_async_replication) {
+        ReplicationTask task(ReplicationTask::DELETE, key, {}, replicas);
+        enqueue_replication_task(task);
+        
+        // Remove from timestamp tracking
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            replication_timestamps.erase(key);
+        }
+        return true; // Async replication always returns success immediately
+    }
     
+    // Synchronous replication - perform network operations without holding lock
     int successful_replications = 0;
     int required_replications = std::min(config.replication_factor - 1, static_cast<int>(replicas.size()));
     
+    // Perform network operations without holding mutex
     for (int i = 0; i < required_replications; ++i) {
         if (!replicas[i] || replicas[i]->port == 0) {
             continue;
@@ -67,12 +98,13 @@ bool ReplicationManager::replicate_delete(const std::string& key,
         }
     }
     
-    // Remove from timestamp tracking
-    replication_timestamps.erase(key);
+    // Remove from timestamp tracking after network operations
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        replication_timestamps.erase(key);
+    }
     
-    return config.enable_async_replication ? 
-           (successful_replications > 0) : 
-           (successful_replications == required_replications);
+    return (successful_replications == required_replications);
 }
 
 bool ReplicationManager::get_from_replicas(const std::string& key, std::vector<uint8_t>& value,
@@ -161,6 +193,98 @@ bool ReplicationManager::ping_node(std::shared_ptr<NodeInfo> node) {
     } catch (...) {
         return false;
     }
+}
+
+void ReplicationManager::start_async_processing() {
+    if (running.load()) {
+        return; // Already running
+    }
+    
+    running = true;
+    processing_thread = std::thread(&ReplicationManager::process_replication_queue, this);
+}
+
+void ReplicationManager::stop_async_processing() {
+    if (!running.load()) {
+        return; // Not running
+    }
+    
+    running = false;
+    queue_cv.notify_all(); // Wake up the processing thread
+    
+    if (processing_thread.joinable()) {
+        processing_thread.join();
+    }
+}
+
+void ReplicationManager::enqueue_replication_task(const ReplicationTask& task) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        pending_tasks.push(task);
+    }
+    queue_cv.notify_one(); // Wake up the processing thread
+}
+
+void ReplicationManager::process_replication_queue() {
+    while (running.load()) {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        
+        // Wait for tasks or shutdown signal
+        queue_cv.wait(lock, [this] {
+            return !pending_tasks.empty() || !running.load();
+        });
+        
+        while (!pending_tasks.empty() && running.load()) {
+            ReplicationTask task = pending_tasks.front();
+            pending_tasks.pop();
+            
+            // Release lock while processing the task (prevents deadlock)
+            lock.unlock();
+            
+            // Process the task with retries
+            bool success = process_single_task(task);
+            
+            if (!success && task.retry_count < config.max_retries) {
+                // Re-enqueue for retry
+                task.retry_count++;
+                std::cerr << "Replication task failed for key '" << task.key 
+                         << "', retry " << task.retry_count << "/" << config.max_retries << std::endl;
+                enqueue_replication_task(task);
+            } else if (!success) {
+                std::cerr << "Replication task permanently failed for key '" << task.key 
+                         << "' after " << config.max_retries << " retries" << std::endl;
+            }
+            
+            // Re-acquire lock for next iteration
+            lock.lock();
+        }
+    }
+}
+
+bool ReplicationManager::process_single_task(ReplicationTask& task) {
+    int successful_replications = 0;
+    int required_replications = std::min(config.replication_factor - 1, 
+                                        static_cast<int>(task.replicas.size()));
+    
+    for (int i = 0; i < required_replications; ++i) {
+        if (!task.replicas[i] || task.replicas[i]->port == 0) {
+            continue;
+        }
+        
+        bool success = false;
+        if (task.type == ReplicationTask::PUT) {
+            success = send_replication_request(task.replicas[i], "PUT", task.key, task.value);
+        } else if (task.type == ReplicationTask::DELETE) {
+            success = send_replication_request(task.replicas[i], "DELETE", task.key);
+        }
+        
+        if (success) {
+            successful_replications++;
+        }
+    }
+    
+    // Return true if we achieved the required replication factor
+    return (successful_replications >= required_replications);
 }
 
 // FailureDetector implementation

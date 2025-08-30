@@ -87,19 +87,29 @@ void ChordNode::join(std::shared_ptr<NodeInfo> existing_node) {
 void ChordNode::leave() {
     stop_maintenance();
     
-    std::lock_guard<std::mutex> lock(routing_mutex);
-    
-    // Transfer all keys to successor before leaving
-    if (successor_list[0] && *successor_list[0] != self_info) {
-        std::cout << "Node " << self_info.to_string() << " leaving ring, transferring keys to successor" << std::endl;
-        transfer_keys_to_node(successor_list[0]);
+    // Get successor to transfer keys to (while holding lock briefly)
+    std::shared_ptr<NodeInfo> successor_to_transfer;
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        if (successor_list[0] && *successor_list[0] != self_info) {
+            successor_to_transfer = successor_list[0];
+        }
     }
     
-    // Reset to single-node state
-    predecessor = nullptr;
-    auto self_ptr = std::make_shared<NodeInfo>(self_info);
-    std::fill(successor_list.begin(), successor_list.end(), self_ptr);
-    std::fill(finger_table.begin(), finger_table.end(), self_ptr);
+    // Transfer keys without holding lock (prevents deadlock)
+    if (successor_to_transfer) {
+        std::cout << "Node " << self_info.to_string() << " leaving ring, transferring keys to successor" << std::endl;
+        transfer_keys_to_node(successor_to_transfer);
+    }
+    
+    // Now reset to single-node state
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        predecessor = nullptr;
+        auto self_ptr = std::make_shared<NodeInfo>(self_info);
+        std::fill(successor_list.begin(), successor_list.end(), self_ptr);
+        std::fill(finger_table.begin(), finger_table.end(), self_ptr);
+    }
 }
 
 void ChordNode::start_maintenance() {

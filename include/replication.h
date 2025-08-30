@@ -8,6 +8,10 @@
 #include <mutex>
 #include <unordered_map>
 #include <chrono>
+#include <queue>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 
 namespace funnelkvs {
 
@@ -27,15 +31,37 @@ public:
             : replication_factor(factor), sync_timeout_ms(timeout_ms), max_retries(3), enable_async_replication(async) {}
     };
     
+    // Replication task for queue-based async processing
+    struct ReplicationTask {
+        enum TaskType { PUT, DELETE };
+        TaskType type;
+        std::string key;
+        std::vector<uint8_t> value;
+        std::vector<std::shared_ptr<NodeInfo>> replicas;
+        int retry_count;
+        
+        ReplicationTask(TaskType t, const std::string& k, 
+                       const std::vector<uint8_t>& v,
+                       const std::vector<std::shared_ptr<NodeInfo>>& r)
+            : type(t), key(k), value(v), replicas(r), retry_count(0) {}
+    };
+    
 private:
     ReplicationConfig config;
     mutable std::mutex mutex;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> replication_timestamps;
     
+    // Queue-based async replication
+    std::queue<ReplicationTask> pending_tasks;
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
+    std::atomic<bool> running;
+    std::thread processing_thread;
+    
 public:
     ReplicationManager() : ReplicationManager(ReplicationConfig()) {}
     explicit ReplicationManager(const ReplicationConfig& cfg);
-    ~ReplicationManager() = default;
+    ~ReplicationManager();
     
     // Core replication operations
     bool replicate_put(const std::string& key, const std::vector<uint8_t>& value,
@@ -72,11 +98,20 @@ public:
     // Node communication
     bool ping_node(std::shared_ptr<NodeInfo> node);
     
+    // Async replication control
+    void start_async_processing();
+    void stop_async_processing();
+    
 private:
     bool send_replication_request(std::shared_ptr<NodeInfo> target,
                                  const std::string& operation,
                                  const std::string& key,
                                  const std::vector<uint8_t>& value = {});
+    
+    // Async replication processing
+    void enqueue_replication_task(const ReplicationTask& task);
+    void process_replication_queue();
+    bool process_single_task(ReplicationTask& task);
 };
 
 // Failure detector for monitoring node health
