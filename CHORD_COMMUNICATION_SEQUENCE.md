@@ -267,7 +267,7 @@ sequenceDiagram
     Note over NodeA, NodeD: Periodic failure detection (every 5 seconds) with timeout protection
     
     loop Every failure_check_interval
-        NodeA->>NodeA: if (!running.load()) return; [shutdown check]
+        NodeA->>NodeA: check if running (shutdown check)
         NodeA->>NodeB: ping() [5s timeout]
         activate NodeB
         Note over NodeB: Node B has failed
@@ -282,7 +282,7 @@ sequenceDiagram
             NodeA->>NodeA: get successor_list[1]
             NodeA->>NodeA: promote backup successor
             
-            NodeA->>NodeC: ping() [5s timeout, verify new successor]
+            NodeA->>NodeC: ping() verify new successor [5s timeout]
             activate NodeC
             NodeC-->>NodeA: pong
             deactivate NodeC
@@ -297,10 +297,10 @@ sequenceDiagram
                 NodeA->>NodeA: get_replica_nodes(key_id)
                 NodeA->>NodeA: check replica count
                 
-                alt Insufficient replicas (async replication)
-                    NodeA->>NodeA: enqueue_replication_task(PUT, key, value, [NodeC, NodeD])
+                alt Insufficient replicas async replication
+                    NodeA->>NodeA: enqueue_replication_task(PUT, key, value, replicas)
                     Note over NodeA: Non-blocking async replication
-                else Insufficient replicas (sync replication)
+                else Insufficient replicas sync replication
                     NodeA->>NodeC: REPLICATE key=value [5s timeout]
                     activate NodeC
                     NodeC->>NodeC: store replica
@@ -347,13 +347,13 @@ sequenceDiagram
         alt Target in immediate successor range
             NodeA->>NodeA: finger[i] = immediate successor
         else Need to route lookup
-            NodeA->>NodeB: find_successor(target) [remote call]
+            NodeA->>NodeB: find_successor(target) remote call
             activate NodeB
             
             NodeB->>NodeB: closest_preceding_node(target)
-            NodeB->>NodeC: find_successor(target) [remote call]
+            NodeB->>NodeC: find_successor(target) remote call
             activate NodeC
-            NodeC-->>NodeB: return responsible node (NodeD)
+            NodeC-->>NodeB: return responsible node NodeD
             deactivate NodeC
             
             NodeB-->>NodeA: return NodeD
@@ -397,7 +397,7 @@ sequenceDiagram
     DepartingNode->>DepartingNode: running.store(false)
     DepartingNode->>DepartingNode: shutdown_cv.notify_all()
     
-    Note over DepartingNode: Detach maintenance threads (prevents deadlock)
+    Note over DepartingNode: Detach maintenance threads prevents deadlock
     DepartingNode->>DepartingNode: stabilize_thread.detach()
     DepartingNode->>DepartingNode: fix_fingers_thread.detach() 
     DepartingNode->>DepartingNode: failure_detection_thread.detach()
@@ -407,13 +407,13 @@ sequenceDiagram
     DepartingNode->>DepartingNode: successor_to_transfer = successor_list[0]
     DepartingNode->>DepartingNode: release routing_mutex
     
-    Note over DepartingNode: Transfer data WITHOUT holding locks (deadlock prevention)
+    Note over DepartingNode: Transfer data WITHOUT holding locks prevents deadlock
     alt Has successor to transfer to
-        DepartingNode->>Successor: transfer_keys_to_node() [5s timeout per transfer]
+        DepartingNode->>Successor: transfer_keys_to_node() 5s timeout per transfer
         activate Successor
         
         loop For each key-value pair
-            DepartingNode->>Successor: TRANSFER_KEY key=value [5s timeout]
+            DepartingNode->>Successor: TRANSFER_KEY key=value 5s timeout
             Successor->>Successor: receive_transferred_key(key, value)
             Successor-->>DepartingNode: ACK
         end
@@ -428,7 +428,7 @@ sequenceDiagram
     DepartingNode->>DepartingNode: reset successor_list and finger_table to self
     DepartingNode->>DepartingNode: release routing_mutex
     
-    DepartingNode->>DepartingNode: shutdown server (100% success with timeouts)
+    DepartingNode->>DepartingNode: shutdown server 100% success with timeouts
     
     Note over Predecessor, Successor: Ring maintains consistency after departure
     Note over DepartingNode: Graceful shutdown achieved with no deadlocks
