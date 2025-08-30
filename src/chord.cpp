@@ -132,18 +132,28 @@ void ChordNode::stop_maintenance() {
     
     running.store(false);
     
+    // Stop replication manager background thread first
+    if (replication_manager) {
+        replication_manager->stop_async_processing();
+    }
+    
     // Wake up any sleeping threads
     shutdown_cv.notify_all();
     
+    // For graceful shutdown, detach threads instead of joining to avoid blocking
+    // The threads will check running.load() and exit naturally
     if (stabilize_thread.joinable()) {
-        stabilize_thread.join();
+        stabilize_thread.detach();
     }
     if (fix_fingers_thread.joinable()) {
-        fix_fingers_thread.join();
+        fix_fingers_thread.detach();
     }
     if (failure_detection_thread.joinable()) {
-        failure_detection_thread.join();
+        failure_detection_thread.detach();
     }
+    
+    // Give threads a moment to see the shutdown signal
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     std::cout << "Stopped maintenance threads for node " << self_info.to_string() << std::endl;
 }
@@ -213,6 +223,9 @@ std::shared_ptr<NodeInfo> ChordNode::closest_preceding_node(const Hash160& id) {
 }
 
 void ChordNode::stabilize() {
+    // Check for shutdown before network operations
+    if (!running.load()) return;
+    
     std::shared_ptr<NodeInfo> successor;
     {
         std::lock_guard<std::mutex> lock(routing_mutex);
@@ -222,6 +235,9 @@ void ChordNode::stabilize() {
     if (!successor || *successor == self_info) {
         return;
     }
+    
+    // Check for shutdown before network operations
+    if (!running.load()) return;
     
     // Ask successor for its predecessor (without holding mutex)
     auto x = contact_node(successor, "get_predecessor");
@@ -234,6 +250,9 @@ void ChordNode::stabilize() {
             successor = x;
         }
     }
+    
+    // Check for shutdown before network operations
+    if (!running.load()) return;
     
     // Notify successor about this node (without holding mutex)
     if (successor && *successor != self_info) {
@@ -268,6 +287,9 @@ void ChordNode::notify(std::shared_ptr<NodeInfo> node) {
 }
 
 void ChordNode::fix_fingers() {
+    // Check for shutdown before network operations
+    if (!running.load()) return;
+    
     int finger_index;
     Hash160 finger_start;
     
@@ -277,6 +299,9 @@ void ChordNode::fix_fingers() {
         finger_index = next_finger_to_fix;
         finger_start = get_finger_start(finger_index);
     }
+    
+    // Check for shutdown before network operations
+    if (!running.load()) return;
     
     // Call find_successor without holding mutex (it may do network operations)
     auto successor = find_successor(finger_start);
@@ -461,6 +486,8 @@ Hash160 ChordNode::get_finger_start(int index) const {
 void ChordNode::stabilize_loop() {
     while (running.load()) {
         try {
+            // Check for shutdown before network operations
+            if (!running.load()) break;
             stabilize();
         } catch (const std::exception& e) {
             std::cerr << "Error in stabilize: " << e.what() << std::endl;
@@ -476,6 +503,8 @@ void ChordNode::stabilize_loop() {
 void ChordNode::fix_fingers_loop() {
     while (running.load()) {
         try {
+            // Check for shutdown before network operations
+            if (!running.load()) break;
             fix_fingers();
         } catch (const std::exception& e) {
             std::cerr << "Error in fix_fingers: " << e.what() << std::endl;
