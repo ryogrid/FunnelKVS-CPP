@@ -114,8 +114,9 @@ classDiagram
         +handle_node_failure(failed_node)
         +trigger_re_replication()
         +transfer_keys_to_node(target_node)
-        +accept_transferred_keys(from_node)
+        +receive_transferred_key(key, value)
         +verify_and_repair_replicas()
+        -send_key_transfer(target, key, value) bool
         -initialize_finger_table()
         -update_finger_table_entry(index, node)
         -stabilize_loop()
@@ -143,6 +144,11 @@ classDiagram
         -ReplicationConfig config
         -mutable mutex mutex
         -unordered_map~string, time_point~ replication_timestamps
+        -queue~ReplicationTask~ pending_tasks
+        -mutex queue_mutex
+        -condition_variable queue_cv
+        -atomic~bool~ running
+        -thread processing_thread
         +ReplicationManager()
         +ReplicationManager(config)
         +~ReplicationManager()
@@ -154,7 +160,21 @@ classDiagram
         +get_replication_factor() int
         +get_replication_count() size_t
         +ping_node(node) bool
+        +start_async_processing()
+        +stop_async_processing()
         -send_replication_request(target, operation, key, value) bool
+        -enqueue_replication_task(task)
+        -process_replication_queue()
+        -process_single_task(task) bool
+    }
+
+    class ReplicationTask {
+        +TaskType type
+        +string key
+        +vector~uint8_t~ value
+        +vector~shared_ptr~NodeInfo~~ replicas
+        +int retry_count
+        +ReplicationTask(type, key, value, replicas)
     }
 
     class FailureDetector {
@@ -236,6 +256,7 @@ classDiagram
     ChordNode o-- Storage : composition
     ChordNode o-- ReplicationManager : composition
     ChordNode o-- FailureDetector : composition
+    ReplicationManager o-- ReplicationTask : uses
     Client ..> Protocol : uses
     Client ..> Request : creates
     Client ..> Response : receives
@@ -254,6 +275,7 @@ classDiagram
         NOTIFY
         PING
         REPLICATE
+        TRANSFER_KEY
         FIND_SUCCESSOR
         FIND_PREDECESSOR
         GET_PREDECESSOR
@@ -344,11 +366,16 @@ void ThreadPool::enqueue(F&& f) {
 #### 4. Replication Manager (`ReplicationManager` class)
 **Protected Data:**
 - `std::unordered_map<std::string, std::chrono::steady_clock::time_point> replication_timestamps` - Tracking of replication timing
+- `std::queue<ReplicationTask> pending_tasks` - Queue for asynchronous replication tasks
+- `std::atomic<bool> running` - Control flag for background processing thread
 
 **Synchronization Mechanism:**
-- **Mutex Type:** `mutable std::mutex mutex`
-- **Strategy:** Coarse-grained locking for replication metadata
-- **Reasoning:** Replication operations are less frequent than read/write operations, so coarse-grained locking is acceptable for simplicity.
+- **Metadata Mutex:** `mutable std::mutex mutex` for timestamps
+- **Queue Mutex:** `std::mutex queue_mutex` for task queue
+- **Condition Variable:** `std::condition_variable queue_cv` for task processing coordination
+- **Background Thread:** `std::thread processing_thread` for async replication
+- **Strategy:** Lock-free async replication to prevent deadlocks during network operations
+- **Reasoning:** Network operations in replication can block; async queue prevents holding locks during network calls.
 
 #### 5. Failure Detection (`FailureDetector` class)
 **Protected Data:**
@@ -392,48 +419,107 @@ The Chord DHT requires continuous background maintenance for correctness:
 - **Coordination:** Works with `FailureDetector` to maintain cluster health
 
 #### 4. Thread Coordination and Shutdown
-**Graceful Shutdown Pattern:**
+**Enhanced Graceful Shutdown Pattern:**
 - All threads use `std::atomic<bool>` flags for shutdown coordination
 - Condition variables (`std::condition_variable shutdown_cv`) allow interruptible waits
+- **Network Operation Shutdown Checks:** Threads check `running.load()` before network operations
+- **Thread Detachment:** Uses `detach()` instead of `join()` to prevent blocking on stuck network operations
+- **Replication Thread Shutdown:** ReplicationManager background thread is explicitly stopped first
 - RAII ensures proper resource cleanup when threads terminate
 
 ```cpp
-// Example shutdown coordination
+// Enhanced shutdown coordination with deadlock prevention
 void ChordNode::stop_maintenance() {
-    {
-        std::lock_guard<std::mutex> lock(shutdown_mutex);
-        running = false;
+    running.store(false);
+    
+    // Stop replication manager background thread first
+    if (replication_manager) {
+        replication_manager->stop_async_processing();
     }
+    
     shutdown_cv.notify_all();
     
-    if (stabilize_thread.joinable()) stabilize_thread.join();
-    if (fix_fingers_thread.joinable()) fix_fingers_thread.join();
-    if (failure_detection_thread.joinable()) failure_detection_thread.join();
+    // Detach threads instead of joining to prevent hanging on network operations
+    if (stabilize_thread.joinable()) stabilize_thread.detach();
+    if (fix_fingers_thread.joinable()) fix_fingers_thread.detach();
+    if (failure_detection_thread.joinable()) failure_detection_thread.detach();
+    
+    // Brief delay to allow threads to see shutdown signal
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 ```
 
-### Concurrency Design Principles
+### Concurrency Design Principles & Deadlock Prevention
 
-#### 1. Lock Hierarchy
+#### 1. Enhanced Lock Hierarchy
 The system follows a consistent lock ordering to prevent deadlocks:
 1. **Server-level locks** (ThreadPool queue mutex)
 2. **Chord routing locks** (routing_mutex)
 3. **Storage locks** (Storage mutex)
 4. **Replication metadata locks** (ReplicationManager mutex)
+5. **Replication queue locks** (ReplicationManager queue_mutex)
 
-#### 2. Lock Duration Minimization
+#### 2. Lock-Free Network Operations (Critical Deadlock Prevention)
+**Problem:** Holding mutexes during network operations can cause distributed deadlocks
+**Solutions Implemented:**
+- **ChordNode::leave()**: Releases `routing_mutex` before calling `transfer_keys_to_node()`
+- **ReplicationManager**: Uses asynchronous queue to avoid holding locks during replication network calls
+- **Maintenance Threads**: Check `running.load()` before network operations to exit quickly during shutdown
+
+```cpp
+// Example: Lock-free network operation pattern
+void ChordNode::stabilize() {
+    if (!running.load()) return;  // Quick shutdown check
+    
+    std::shared_ptr<NodeInfo> successor;
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        successor = successor_list[0];
+    }  // Lock released before network operation
+    
+    if (!running.load()) return;  // Check again before network call
+    auto x = contact_node(successor, "get_predecessor");  // Network I/O without lock
+    
+    // Re-acquire lock only for data updates
+    {
+        std::lock_guard<std::mutex> lock(routing_mutex);
+        if (x && valid_update_condition) {
+            successor_list[0] = x;
+        }
+    }
+}
+```
+
+#### 3. Network Operation Timeouts
+**5-Second Timeout Protection:**
+- All socket operations have 5-second send/receive timeouts via `SO_SNDTIMEO`/`SO_RCVTIMEO`
+- Client connections use non-blocking connect with 1-second timeout
+- Server client handlers set timeouts on accepted connections
+- Prevents indefinite blocking on network operations to failed nodes
+
+#### 4. Asynchronous Replication Queue System
+**Lock-Free Replication Strategy:**
+- ReplicationManager uses background thread with task queue
+- Replication requests are enqueued without holding locks
+- Network operations are performed in dedicated thread context
+- Retry mechanism with configurable max attempts
+- Prevents blocking main thread on replication network calls
+
+#### 5. Lock Duration Minimization
 - All critical sections are kept as short as possible
 - Long-running operations (network I/O) are performed outside of critical sections
 - Copy-on-read pattern for shared data structures when appropriate
 
-#### 3. Atomic Operations
+#### 6. Atomic Operations
 - Control flags use `std::atomic<bool>` to avoid lock overhead for simple state checks
 - Reference counting for shared node information uses `std::shared_ptr` built-in atomic reference counting
+- Background thread control uses atomic flags for lock-free shutdown coordination
 
-#### 4. Thread-Safe Design Patterns
+#### 7. Thread-Safe Design Patterns
 - **RAII:** All locks use RAII pattern with `std::lock_guard` and `std::unique_lock`
 - **Immutable Data:** Node identifiers and hash values are immutable after creation
 - **Copy Semantics:** Shared data is copied when crossing thread boundaries to minimize lock contention
+- **Condition Variables:** Used for efficient thread coordination in queues and shutdown
 
 ### Performance Considerations
 

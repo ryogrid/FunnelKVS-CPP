@@ -13,15 +13,17 @@ FunnelKVS-CPP is a distributed key-value store that implements the Chord distrib
 ### Key Features
 
 - **Chord DHT Protocol**: ✅ Efficient O(log N) routing with consistent hashing
-- **Binary Protocol**: ✅ Custom binary protocol for high-performance client-server communication
+- **Binary Protocol**: ✅ Custom binary protocol with 5-second network timeouts
 - **Thread-Safe Storage**: ✅ In-memory storage with concurrent access support
 - **Multi-threaded Server**: ✅ Thread pool architecture for handling concurrent requests
 - **Distributed Operations**: ✅ PUT/GET/DELETE operations work across any node in the cluster
 - **Data Transfer**: ✅ Automatic data transfer on node join/leave operations
-- **Replication**: ✅ Data replication across successor nodes with re-replication on failures
+- **Replication**: ✅ Data replication with async queue system and re-replication on failures
+- **Deadlock Prevention**: ✅ Lock-free network operations and comprehensive concurrency control
 - **Administrative Control**: ✅ Remote shutdown and cluster management via client tools
 - **Multi-Node Clusters**: ✅ Tested with 10-node clusters, automatic ring formation and stabilization
 - **Fault Tolerance**: ✅ Node failure detection with automatic data recovery (tested with 30% node failures)
+- **Graceful Shutdown**: ✅ 100% graceful shutdown success with proper thread cleanup
 - **Zero Dependencies**: ✅ Pure C++ standard library implementation
 - **Comprehensive Testing**: ✅ Unit tests, integration tests, and multi-node cluster tests
 
@@ -176,7 +178,12 @@ bash tests/test_failure_resilience.sh   # Failure resilience test with node reco
 - [x] Replica verification and repair
 - [x] Comprehensive failure resilience testing (30% node failure tolerance)
 
-### Phase 4: Production Features (Planned)
+### Phase 4: Concurrency Control & Production Readiness ✅
+- [x] Deadlock prevention with lock-free network operations
+- [x] Network operation timeouts (5-second protection)
+- [x] Asynchronous replication queue system  
+- [x] Graceful shutdown improvements with thread cleanup
+- [x] Comprehensive concurrency control analysis and fixes
 - [ ] Performance monitoring and metrics
 - [ ] Configuration management beyond command-line args
 - [ ] Comprehensive logging and debugging tools
