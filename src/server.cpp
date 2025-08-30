@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -167,6 +168,17 @@ bool Server::send_data(int fd, const std::vector<uint8_t>& data) {
 }
 
 void Server::handle_client(int client_fd) {
+    // Set socket timeouts for client operations (5 seconds)
+    struct timeval timeout;
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        // Non-fatal, continue without timeout
+    }
+    if (setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+        // Non-fatal, continue without timeout
+    }
+    
     while (true) {
         // Read opcode and key length first
         std::vector<uint8_t> initial_header(5);

@@ -1,5 +1,6 @@
 #include "client.h"
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -102,6 +103,17 @@ bool Client::connect() {
     
     // Restore blocking mode
     fcntl(socket_fd, F_SETFL, flags);
+    
+    // Set socket timeouts for send and receive operations (5 seconds)
+    struct timeval timeout;
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        // Non-fatal, continue without timeout
+    }
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+        // Non-fatal, continue without timeout
+    }
     
     connected = true;
     return true;
